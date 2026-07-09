@@ -78,13 +78,13 @@
 | DP-003 | フォールバック可能性      | Gemini、X API、音声処理などの外部依存に失敗した場合でも、アプリ全体が停止しないようにする。  |
 | DP-004 | MVPでは安定性を優先     | 機能の多さよりも、デモ時に確実に体験価値が伝わることを優先する。                     |
 | DP-005 | 設計と開発規則の分離      | 基本設計書には構成・方針を記載し、ブランチ運用やCI/CD手順等は開発規則ドキュメントへ分離する。    |
-| DP-006 | 将来的な拡張余地        | MVPでは簡易実装を許容しつつ、Worker分離、DB拡張、Agent分割、監視強化が可能な構成にする。 |
+| DP-006 | 将来的な拡張余地        | MVPでは簡易実装を許容しつつ、stg環境追加、DB拡張、Agent構成の見直し、監視強化が可能な構成にする。 |
 
 ---
 
 ## 3. リポジトリ構成方針
 
-本プロジェクトは、フロントエンド、バックエンドAPI、非同期Worker、インフラ、設計文書を単一リポジトリで管理するmonorepo構成とする。
+本プロジェクトは、フロントエンド、バックエンドAPI、Agent実行基盤（Vertex AI Agent Engine）、インフラ、設計文書を単一リポジトリで管理するmonorepo構成とする。
 
 リポジトリrootは `real_conversation_agents/` とする。以下は本書作成時点（2026-07-09）の実際のリポジトリ構成を土台に、今後実装で追加するディレクトリを含めた構成方針である。
 
@@ -124,7 +124,7 @@ real_conversation_agents/
 | `docs/`          | 要件定義書、基本設計書、開発規則、DevOpsメモ、図表を管理する。`asset/`に図表、`frontend/` `backend/` `infra/`に領域別の詳細設計書を今後追加していく。 | 既存  |
 | `frontend/`      | Web UI、画面遷移、音声入力UI、吹き出し表示、復習画面を管理する。                                                   | 未作成 |
 | `api/`           | ユーザー操作を受けるAPI、リアルタイム会話制御、Gemini Live API連携、セッション管理を担当する。                               | 未作成 |
-| `worker/`        | 会話後フィードバック、会話要約、トピック取得、クリーンアップ等の非同期処理を担当する。                                          | 未作成 |
+| `worker/` | ～廃止～ Worker / Cloud Tasksは採用しないため、このディレクトリは作らない（`docs/infra/01_ARCHITECTURE.md` §8）。会話後フィードバック・要約はAPIからVertex AI Agent Engineへの同期呼び出しで行う。 | 廃止 |
 | `packages/`      | frontend / api / workerで共有する型定義、定数、スキーマ等を管理する。MVPでは未使用でもよい。                            | 未作成 |
 | `infra/`（root直下） | Terraform等のIaC、GCPリソース定義、デプロイ補助スクリプトを管理する。                                             | 未作成 |
 | `.github/`       | GitHub Actions等のCI/CD設定を管理する。                                                        | 未作成 |
@@ -137,37 +137,36 @@ real_conversation_agents/
 
 ## 4. システム全体構成
 
+> 本章は要約のみ。GCP構成・IAM・環境差分の詳細は`docs/infra/01_ARCHITECTURE.md`を正とする。
+
 ### 4.1 全体構成
 
 ```mermaid
 flowchart TD
-    U[User Browser] --> FE[Frontend]
-    FE <--> API[Cloud Run: API / Realtime Backend]
-    API <--> GLive[Gemini Live API]
-    API --> DB[(Firestore / Cloud SQL)]
-    API --> CT[Cloud Tasks]
-    CT --> WK[Cloud Run: Worker]
-    WK --> Gemini[Gemini API / Vertex AI Gemini]
-    WK --> DB
-    WK --> XAPI[X API]
+    U[User Browser] --> FE[Frontend: Firebase Hosting]
+    FE <--> API[Cloud Run: API]
+    API <--> AE[Vertex AI Agent Engine: ADK Runner]
+    AE <--> GLive[Gemini Live API]
+    API --> DB[(Firestore)]
+    AE --> XAPI[X API]
     API --> SM[Secret Manager]
-    WK --> SM
+    AE --> SM
     API --> LOG[Cloud Logging / Monitoring]
-    WK --> LOG
+    AE --> LOG
 ```
 
 ### 4.2 構成の考え方
 
 | 領域 | 方針 |
 |---|---|
-| フロントエンド | ブラウザで動作するWeb UI。音声入力、会話表示、会話後復習を担当する。 |
-| API / Realtime Backend | セッション管理、リアルタイム会話制御、Gemini Live API接続、DB書き込み、後処理ジョブ投入を担当する。 |
-| Worker | リアルタイム性が不要な処理を非同期に実行する。 |
-| AI Agent | 会話進行、話者制御、文法フィードバック、トピック生成を担当する。 |
-| DB | セッション、発話、AI応答、フィードバック、ジョブ状態を保存する。 |
-| Cloud Tasks | 後処理ジョブをqueueとして制御する。 |
+| フロントエンド | React（Vite）+ Tailwind CSSのSPA。Firebase Hostingで配信し、音声入力、会話表示、会話後復習を担当する。 |
+| API | FastAPI（Cloud Run）。password認証、セッション管理、Agent Engineへの中継を行う薄いゲートウェイ。 |
+| Agent実行基盤 | Vertex AI Agent Engine（ADK）。会話進行、話者制御、文法フィードバック、トピック生成、Gemini Live APIとのセッション保持を担当する。 |
+| DB | Firestore。セッション、発話、AI応答、フィードバックを保存する（TTLで自動クリーンアップ）。 |
 | Secret Manager | APIキー、認証情報、環境別secretを管理する。 |
 | Logging / Monitoring | エラー、レイテンシ、レートリミット、利用量を観測する。 |
+
+Worker / Cloud Tasksは採用しない。会話後フィードバック・要約はAPIからAgent Engineへの同期呼び出しで完結させる（11章、`docs/infra/01_ARCHITECTURE.md` §8）。
 
 ---
 
@@ -177,13 +176,15 @@ flowchart TD
 
 ### 5.1 環境構成
 
+**dev / prdから開始し、必要になった時点でstgを追加する**（`docs/infra/01_ARCHITECTURE.md` §1, `docs/infra/04_DEPLOY.md` §8）。
+
 | 環境      | 目的          | 主な利用者      | 想定構成                                       |
 | ------- | ----------- | ---------- | ------------------------------------------ |
 | local   | 手元開発・単体確認   | 開発者        | ローカルfrontend / API、mock外部API、必要に応じてdev API |
 | preview | PRレビュー・UI確認 | 開発者・レビュー担当 | frontend preview、mock APIまたはdev API        |
-| dev     | 開発者向け統合確認   | 開発者        | frontend-dev、api-dev、worker-dev、dev DB     |
-| stg     | リリース前統合確認   | 開発者・発表担当   | frontend-stg、api-stg、worker-stg、stg DB     |
-| prod    | デモ・本番相当     | 利用者・審査員    | frontend-prod、api-prod、worker-prod、prod DB |
+| dev     | 開発者向け統合確認   | 開発者        | frontend-dev、api-dev（ALB/Cloud Armorなし、直接公開）、dev DB |
+| prd     | デモ・本番相当     | 利用者・審査員    | frontend-prd、api-prd（ALB + Cloud Armor経由）、prd DB |
+| stg（将来） | リリース前統合確認   | 開発者・発表担当   | 時間が許せばprd構成をコピーして追加する |
 
 ### 5.2 検証方針
 
@@ -191,9 +192,10 @@ flowchart TD
 | ------------ | ---------------------------------------------------------- |
 | local        | ユニットテスト、コンポーネントテスト、型チェック、mock APIによる画面確認を行う。               |
 | PR / preview | lint、typecheck、build、mock E2Eにより、UIフローと基本動作が壊れていないことを確認する。 |
-| dev          | frontend、api、workerを接続し、開発中機能の統合動作を確認する。                   |
-| stg          | 本番に近い構成で、音声入力、AI応答、会話ログ保存、会話後フィードバック生成まで確認する。              |
-| prod         | リリース後にsmoke testを実施し、主要画面とヘルスチェックが正常であることを確認する。            |
+| dev          | frontend、api、Agent Engineを接続し、開発中機能の統合動作を確認する。                   |
+| prd          | 本番に近い構成で、音声入力、AI応答、会話ログ保存、会話後フィードバック生成まで確認する。              |
+| prd（リリース後） | smoke testを実施し、主要画面とヘルスチェックが正常であることを確認する。            |
+| stg（将来） | stg導入後は、prdへ進む前の統合確認として位置づける。                            |
 
 ### 5.3 フロントエンド統合テスト方針
 
@@ -202,10 +204,10 @@ flowchart TD
 | テスト種別 | 実行環境 | 外部API |
 |---|---|---|
 | mock E2E | PR / preview | 原則mock |
-| real E2E | stg | 実APIを利用 |
-| smoke test | prod | 最小限の疎通確認 |
+| real E2E | dev（stg導入後はstg） | 実APIを利用 |
+| smoke test | prd | 最小限の疎通確認 |
 
-PR段階では高速性と再現性を重視し、Gemini Live APIやX APIへの直接接続は原則行わない。stgでは本番に近い構成で実APIを用いた統合確認を行う。
+PR段階では高速性と再現性を重視し、Gemini Live APIやX APIへの直接接続は原則行わない。devでは実APIを用いた統合確認を行う。
 
 ---
 
@@ -216,36 +218,39 @@ PR段階では高速性と再現性を重視し、Gemini Live APIやX APIへの�
 | 項目 | 内容 |
 |---|---|
 | 主な責務 | 会話設定、音声入力、吹き出し表示、AI音声再生、会話後復習表示 |
-| 想定技術 | Next.js / React / TypeScript |
+| 想定技術 | React（Vite） / TypeScript / Tailwind CSS |
+| ホスティング | Firebase Hosting |
 | 主要画面 | Setup画面、Conversation画面、Review画面 |
-| 外部接続 | API / Realtime Backend |
+| 外部接続 | API（Cloud Run） |
 | 設計上の注意 | マイク権限、接続切断、ローディング、AI応答中断、エラー表示をユーザーにわかりやすく示す。 |
 
-### 6.2 API / Realtime Backend
+### 6.2 API
 
 | 項目     | 内容                                                        |
 | ------ | --------------------------------------------------------- |
-| 主な責務   | セッション作成、会話状態管理、Gemini Live API接続、発話ログ保存、後処理ジョブ投入          |
-| 想定技術   | Cloud Run、FastAPIまたはNode.js                               |
-| 主なI/O  | Frontendからの会話操作、Gemini Live APIとの双方向通信、DB更新、Cloud Tasks投入 |
-| 設計上の注意 | 低遅延、セッション管理、接続切断、レートリミット、secret秘匿を考慮する。                   |
+| 主な責務   | password認証、セッション作成、会話状態管理、Agent Engineへの中継、発話ログ保存、同時実行数バックプレッシャー |
+| 想定技術   | Cloud Run、FastAPI |
+| 主なI/O  | Frontendからの会話操作、Agent Engineとの通信、DB更新 |
+| 設計上の注意 | 低遅延、セッション管理、接続切断、レートリミット、secret秘匿を考慮する。詳細は`docs/infra/01_ARCHITECTURE.md` §7。 |
 
-### 6.3 Worker
+### 6.3 Agent実行基盤（Vertex AI Agent Engine）
+
+Worker / Cloud Tasksは採用しない（11章）。ADKで実装したAgentは、Cloud Run上に自前ホストせず**Vertex AI Agent Engine**にデプロイする。
 
 | 項目 | 内容 |
 |---|---|
-| 主な責務 | 会話後フィードバック生成、会話要約、トピック取得、ログ整理 |
-| 想定技術 | Cloud Run Worker、Cloud Tasks |
-| 主なI/O | Cloud Tasksからのjob、DB、Gemini API、X API |
-| 設計上の注意 | retry、backoff、idempotency、API rate limit、失敗時の再実行を考慮する。 |
+| 主な責務 | 会話進行、話者制御、文法フィードバック生成、会話要約、トピック生成、Gemini Live APIとの双方向ストリーミング保持 |
+| 想定技術 | ADK、Vertex AI Agent Engine |
+| 主なI/O | APIからの中継リクエスト、Gemini Live API、X API（Topic Agent tool）、`VertexAiSessionService`によるセッション永続化 |
+| 設計上の注意 | セッション状態の情報源（SoT）はAgent Engine Sessions側とする。詳細は`docs/infra/01_ARCHITECTURE.md` §12、`docs/backend/02_AGENT_DESIGN.md`（別途執筆）。 |
 
 ### 6.4 DB
 
 | 項目 | 内容 |
 |---|---|
-| 主な責務 | セッション、発話、AI応答、フィードバック、ジョブ状態、イベントログの保存 |
-| 候補 | Firestore / Cloud SQL |
-| 設計上の注意 | MVPでは柔軟なスキーマを優先しつつ、後続の検索・分析・復習画面に必要な構造を保持する。 |
+| 主な責務 | セッション、発話、AI応答、フィードバックの保存（復習画面・ログ用） |
+| 採用技術 | Firestore（Native mode） |
+| 設計上の注意 | TTLポリシーでセッションクリーンアップを自動化する。詳細は`docs/infra/01_ARCHITECTURE.md` §9、`docs/backend/03_DATA_DESIGN.md`（別途執筆）。 |
 
 ### 6.5 Infra
 
@@ -253,8 +258,8 @@ PR段階では高速性と再現性を重視し、Gemini Live APIやX APIへの�
 |---|---|
 | 主な責務 | GCPリソースをIaCで管理する |
 | 候補 | Terraform |
-| 管理対象 | Cloud Run、Cloud Tasks、Firestore / Cloud SQL、Secret Manager、Artifact Registry、IAM等 |
-| 設計上の注意 | 環境別にdev / stg / prodを分離できる構成にする。 |
+| 管理対象 | Cloud Run、Vertex AI Agent Engine、Firestore、Secret Manager、Artifact Registry、IAM、Organization Policy等 |
+| 設計上の注意 | dev / prdをまず分離し、stgは将来追加する。詳細は`docs/infra/01_ARCHITECTURE.md` §18、`docs/infra/02_PARAMS_DEF.md`。 |
 
 ---
 
@@ -317,16 +322,11 @@ MVPでは、無音検知は簡易方式から開始する。具体的な実装�
 | Topic Agent | 事前トピック、任意トピック、トレンド情報から会話テーマを生成する。 | 必須または一部実装 |
 | Summary / Compression Agent | 会話の要約・文脈圧縮を行う。 | Should |
 
-### 8.2 MVPでの実装方針
+### 8.2 MVPでの実装方針（確定）
 
-MVPでは、必ずしも物理的に複数の独立Agentプロセスを立てる必要はない。実装負荷を抑えるため、以下のどちらかを採用する。
+Agentの実行基盤として**Vertex AI Agent Engine**を採用する（「Cloud Run上に自前でADKをホストする」方式は、Gemini Live APIとの双方向ストリーミングにおけるセッションアフィニティ問題を解決できないため不採用とした）。
 
-| 方式 | 説明 |
-|---|---|
-| 論理Agent方式 | 1つのAgent Runtime内で、Conversation Managerが複数話者を制御する。 |
-| 物理Agent方式 | Conversation Manager、Persona、Grammar等を実装上も分離する。 |
-
-MVPでは、論理Agent方式を第一候補とする。理由は、複数人会話体験を実現しつつ、Agent間通信の実装負荷を抑えられるためである。
+Conversation Manager、Persona、Grammar Feedback、Topic、Summary/Compressionの各Agentは、ADKの1つのRuntime内で論理的に構成し、Agent Engineというマネージド基盤に実行・スケーリング・セッション永続化（`VertexAiSessionService`）を委譲する。判断の詳細な経緯は`docs/infra/01_ARCHITECTURE.md` §12を参照。
 
 ### 8.3 Agent出力形式
 
@@ -377,7 +377,7 @@ Grammar Feedback Agentの出力例：
 |---|---|
 | GAI-001 | リアルタイム会話はGemini Live APIを第一候補とする。 |
 | GAI-002 | 文法フィードバック・要約等はGemini API / Vertex AI Geminiを利用する。 |
-| GAI-003 | ADKはAgent実装の補助として利用する。 |
+| GAI-003 | ADKはAgent実装に用い、Vertex AI Agent Engineにデプロイする（`docs/infra/01_ARCHITECTURE.md` §12）。 |
 | GAI-004 | ADKを利用してもGemini API / Vertex AI / Agent Platformのquotaは適用される前提で設計する。 |
 | GAI-005 | API失敗時のfallbackをアプリ側で設計する。 |
 
@@ -402,35 +402,31 @@ APIキー、認証情報、環境別設定はSecret Managerで管理する。fro
 
 ---
 
-## 11. 非同期処理・ジョブ管理基本設計
+## 11. 非同期処理方針（Worker / Cloud Tasksは採用しない）
 
-### 11.1 対象処理
+Cloud Run Worker + Cloud Tasksによるjobキュー方式は不採用とした。Agentの実行基盤をVertex AI Agent Engineに寄せたことで、以下の形で代替する（詳細は`docs/infra/01_ARCHITECTURE.md` §8）。
 
-| Job | 内容 | 優先度 |
-|---|---|---|
-| feedback_generation | 会話後の文法・表現フィードバック生成 | Must |
-| conversation_summary | 会話内容の要約生成 | Should |
-| trend_topic_fetch | X API等からトレンド取得 | Could |
-| session_cleanup | 古いセッションや一時データの整理 | Could |
-
-### 11.2 ジョブ管理方針
+| 旧job | 代替方式 |
+|---|---|
+| feedback_generation | 会話終了APIでAgent Engineを**同期呼び出し**（クライアントは数秒待つ） |
+| conversation_summary | 同上 |
+| trend_topic_fetch | Topic AgentのADK tool（Agent Engine内で完結、失敗時fallbackもtool内） |
+| session_cleanup | **Firestore TTLポリシー**で自動削除（Cloud Functions/cron不要） |
 
 ```mermaid
 flowchart LR
-    API[API] -->|enqueue| CT[Cloud Tasks]
-    CT --> WK[Worker]
-    WK --> DB[(DB)]
-    WK --> AI[Gemini API]
-    WK --> EXT[X API]
+    API[API] -->|同期呼び出し| AE[Vertex AI Agent Engine]
+    AE --> Gemini[Gemini API]
+    AE --> XAPI[X API]
+    API --> DB[(Firestore)]
 ```
 
 | ID | 方針 |
 |---|---|
-| JOB-001 | リアルタイム会話本体はqueueに入れない。 |
-| JOB-002 | 会話後フィードバック等の重い処理はCloud Tasksで非同期化する。 |
-| JOB-003 | 各jobには一意のjob_idを付与する。 |
-| JOB-004 | retry回数、失敗状態、完了状態を保存する。 |
-| JOB-005 | 429や一時的障害に対してbackoff再試行できる設計にする。 |
+| JOB-001 | リアルタイム会話本体はqueueに入れない（従来通り）。 |
+| JOB-002 | 会話後フィードバック等はAgent Engineへの同期呼び出しで完結させる（Cloud Tasksは使わない）。 |
+| JOB-003 | Cloud Tasksのretry保証が無くなるため、Gemini / Agent Engine呼び出しのretry/backoffはアプリコード側で明示的に実装する。 |
+| JOB-004 | 同時実行数バックプレッシャー（閾値超過時は429 + Retry-Afterを返す）で過負荷を防ぐ。「確実な実行」の保証ではなく過負荷保護である点に注意。 |
 
 ---
 
@@ -456,13 +452,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[会話終了] --> B[APIがfeedback jobを作成]
-    B --> C[Cloud Tasksへenqueue]
-    C --> D[Workerがjobを受信]
-    D --> E[Gemini APIでフィードバック生成]
-    E --> F[DBへ保存]
-    F --> G[Frontendが結果取得]
-    G --> H[Review画面に表示]
+    A[会話終了] --> B[APIがAgent Engineを同期呼び出し]
+    B --> C[Agent EngineがGemini APIでフィードバック生成]
+    C --> D[APIがDBへ保存]
+    D --> E[Frontendへレスポンス]
+    E --> F[Review画面に表示]
 ```
 
 ---
@@ -644,7 +638,7 @@ erDiagram
 |---|---|
 | 性能 | リアルタイム会話では低遅延を優先し、AI応答は短めに制御する。 |
 | 可用性 | 外部API失敗時のfallbackとユーザー向けエラー表示を用意する。 |
-| 拡張性 | API、Worker、Agent、Frontendを分離し、後から拡張できるようにする。 |
+| 拡張性 | API、Agent実行基盤（Agent Engine）、Frontendを分離し、後から拡張できるようにする。 |
 | 保守性 | monorepoでdocs、infra、api、frontend、workerを管理し、責務を明確化する。 |
 | セキュリティ | secret管理、最小権限、ログ出力制御を基本方針とする。 |
 | コスト | セッション時間制限、後処理の非同期化、利用量ログにより制御する。 |
@@ -660,7 +654,7 @@ erDiagram
 | Gemini Live API接続失敗 | 再接続または安全な終了を行い、ユーザーへ案内する。 |
 | Gemini API 429 | retry / backoff、または後処理遅延として扱う。 |
 | X API失敗 | 事前トピックへfallbackする。 |
-| Worker失敗 | job状態をfailed / retryingに更新し、必要に応じて再実行する。 |
+| Agent Engine呼び出し失敗 | フィードバック/要約生成をエラーとしてユーザーへ通知し、必要に応じて再試行できるようにする。 |
 | DB書き込み失敗 | ユーザー体験を可能な範囲で継続し、ログに記録する。 |
 | 予期しない例外 | 共通エラーハンドラで捕捉し、ユーザーには簡潔なエラーを表示する。 |
 
@@ -674,7 +668,7 @@ erDiagram
 |---|---|
 | session event | セッション開始、終了、失敗、接続切断 |
 | agent event | 発話生成、次話者決定、tool call |
-| external API event | Gemini、X API、Cloud Tasksの呼び出し結果 |
+| external API event | Gemini、X API、Agent Engineの呼び出し結果 |
 | error event | 例外、API失敗、rate limit |
 | performance event | 応答遅延、処理時間、job実行時間 |
 
@@ -696,13 +690,13 @@ erDiagram
 
 | テスト分類 | 対象 | 方針 |
 |---|---|---|
-| Unit Test | frontend hooks、utils、api services、worker jobs | 外部APIをmockして高速に実行する。 |
+| Unit Test | frontend hooks、utils、api services、agent tool関数 | 外部APIをmockして高速に実行する。 |
 | Component Test | UI部品、吹き出し、トピック選択、復習表示 | ユーザー操作に対する表示変化を確認する。 |
 | API Test | session作成、会話開始、job投入 | DB・外部APIをmockまたはtest用に差し替える。 |
 | Mock E2E | Setup→Conversation→Review | PR段階でmock APIを用いて安定実行する。 |
-| Real E2E | 音声入力、Gemini応答、フィードバック生成 | stg環境で実施する。 |
+| Real E2E | 音声入力、Gemini応答、フィードバック生成 | dev環境で実施する（stg導入後はstg）。 |
 | Agent Behavior Test | 複数人会話、英語応答、文法フィードバック | 固定入力に対して期待する振る舞いを確認する。 |
-| Smoke Test | prodリリース後の最小動作 | 主要画面、ヘルスチェック、接続を確認する。 |
+| Smoke Test | prdリリース後の最小動作 | 主要画面、ヘルスチェック、接続を確認する。 |
 
 ---
 
@@ -749,28 +743,39 @@ erDiagram
 
 - Terraform module構成
 - Cloud Run service設定
-- Cloud Tasks queue設定
-- IAM
+- Vertex AI Agent Engineデプロイ設定
+- IAM、Organization Policy
 - Secret Manager
 - Logging / Monitoring
 - 環境別変数
+
+上記の多くは`docs/infra/01_ARCHITECTURE.md`〜`04_DEPLOY.md`で既に詳細化済み。
 
 ---
 
 ## 23. 未決定事項
 
+### 23.1 解決済み
+
+| TBD ID | 結論 |
+|---|---|
+| ~~TBD-001~~ | Next.jsではなく、React（Vite）+ Tailwind CSSのSPAに確定 |
+| ~~TBD-002~~ | FastAPI（Python）に確定 |
+| ~~TBD-004~~ | ADKで実装し、Vertex AI Agent Engineにデプロイする方式に確定 |
+| ~~TBD-005~~ | Firestoreに確定 |
+| ~~TBD-008~~ | Worker/Cloud Tasksは採用しないことに確定 |
+| ~~TBD-010~~ | dev/prdから開始し、必要になった時点でstgを追加する方針に確定 |
+
+### 23.2 未決定事項
+
 | TBD ID | 未決定事項 | 判断観点 |
 |---|---|---|
-| TBD-001 | フロントエンドをNext.jsで確定するか | チームの経験、音声処理、デプロイ容易性 |
-| TBD-002 | APIをFastAPIにするかNode.jsにするか | ADK連携、WebSocket、Gemini Live API実装容易性 |
-| TBD-003 | Gemini Live APIをbackend経由で接続するか | secret保護、ログ、レイテンシ |
-| TBD-004 | ADKをどの範囲で使うか | Agent実装、Runtime、Deployment |
-| TBD-005 | DBをFirestoreにするかCloud SQLにするか | 柔軟性、検索性、トランザクション |
+| TBD-003 | Gemini Live APIをAgent Engine経由で接続する構成の詳細 | secret保護、ログ、レイテンシ（`docs/infra/01_ARCHITECTURE.md` §12） |
 | TBD-006 | X API連携をMVPに含めるか | API制限、実装負荷、審査加点 |
 | TBD-007 | barge-inをMVPでどこまで実装するか | 体験価値、実装難度 |
-| TBD-008 | Workerを最初から分離するか | MVP速度、拡張性 |
-| TBD-009 | 会話ログの保存期間 | プライバシー、デバッグ、復習 |
-| TBD-010 | stg / prod環境をどこまで分離するか | デモ安定性、開発コスト |
+| TBD-009 | 会話ログの保存期間 | プライバシー、デバッグ、復習（Firestore TTLの具体的な日数、`docs/infra/01_ARCHITECTURE.md` §9.6） |
+
+インフラ関連の残りのTBDは`docs/infra/01_ARCHITECTURE.md` §22、`02_PARAMS_DEF.md` §12、`03_SECURITY.md` §9、`04_DEPLOY.md` §11に集約されている。
 
 ---
 
@@ -778,9 +783,13 @@ erDiagram
 
 - `docs/REQUIREMENTS_DEFINITION.md`
 - `docs/CONTRIBUTION.md`
+- `docs/infra/01_ARCHITECTURE.md`（GCP構成の詳細はこちらが正）
+- `docs/infra/02_PARAMS_DEF.md`
+- `docs/infra/03_SECURITY.md`
+- `docs/infra/04_DEPLOY.md`
 - Google Cloud Agent Development Kit Documentation
+- Vertex AI Agent Engine Documentation
 - Gemini Live API Documentation
 - Cloud Run Documentation
-- Cloud Tasks Documentation
 - Secret Manager Documentation
 - X API Documentation
