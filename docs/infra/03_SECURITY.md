@@ -3,16 +3,16 @@
 ## 目次
 
 - [0. 文書情報](#0-文書情報)
-- [1. 本書の目的](#1-本書の目的)
-- [2. 多層防御の全体像](#2-多層防御の全体像)
-- [3. Organization Policy（Domain Restricted Sharing）](#3-organization-policydomain-restricted-sharing)
-- [4. IAM / Service Account 権限表](#4-iam--service-account-権限表)
-- [5. Cloud Armor設計（prd限定）](#5-cloud-armor設計prd限定)
-- [6. パスワード認証とネットワーク保護の関係](#6-パスワード認証とネットワーク保護の関係)
-- [7. VPC Service Controls：見送りの判断根拠](#7-vpc-service-controls見送りの判断根拠)
-- [8. Cloud VPNを採用しない理由](#8-cloud-vpnを採用しない理由)
-- [9. 未決定事項](#9-未決定事項)
-- [10. 参考資料](#10-参考資料)
+- [1. セキュリティ設計の基本方針](#1-セキュリティ設計の基本方針)
+- [2. 認証・認可設計](#2-認証認可設計)
+- [3. dev環境のアクセス制御](#3-dev環境のアクセス制御)
+- [4. IAM / Service Account設計](#4-iam--service-account設計)
+- [5. Secret Manager設計](#5-secret-manager設計)
+- [6. レート制限・バックプレッシャー](#6-レート制限バックプレッシャー)
+- [7. データ保護方針](#7-データ保護方針)
+- [8. 採用しなかった対策とその理由](#8-採用しなかった対策とその理由)
+- [9. 残存リスクと軽減策](#9-残存リスクと軽減策)
+- [10. 未決定事項](#10-未決定事項)
 
 ---
 
@@ -22,202 +22,163 @@
 |---|---|
 | 文書名 | リアルな複数人英会話トレーニングエージェント セキュリティ設計書 |
 | 版数 | v0.1 |
-| 作成日 | 2026-07-09 |
-| 関連文書 | `docs/infra/01_ARCHITECTURE.md`, `docs/infra/02_PARAMS_DEF.md` |
-| 位置づけ | IAM・Organization Policy・Cloud Armor・VPC-SCなど、セキュリティ関連の意思決定と設定値を集約する。`01_ARCHITECTURE.md`からは本書への参照のみとし、詳細はここに一本化する。 |
+| 作成日 | 2026-07-11 |
+| 前提文書 | `docs/infra/00_OVERVIEW.md`、`docs/infra/01_ARCHITECTURE.md` |
+| 位置づけ | Cloud Armor/ALB/API Gateway/VPC Service Controlsを採用しない前提で、認証・認可・IAM・レート制限・データ保護をどう担保するかを定義する |
 
 ---
 
-## 1. 本書の目的
+## 1. セキュリティ設計の基本方針
 
-「IAM設定ミスによる意図しない公開を、運用ではなく仕組みで防ぐ」ことを目的に、以下を定義する。
-
-- Organization Policyによる公開バインディングの禁止
-- 各Service Accountに付与する最小権限
-- Cloud Armorの防御ルール（prd限定）
-- VPC Service Controlsを見送った理由と、再検討する条件
-- Cloud VPNが適用対象にならない理由（記録として残す）
-
----
-
-## 2. 多層防御の全体像
-
-| レイヤ | 防御手段 | 対象 |
-|---|---|---|
-| ポリシー層 | Organization Policy（Domain Restricted Sharing） | 全リソース共通 |
-| ネットワーク層（prdのみ） | Cloud Run ingress制限 + External ALB + Cloud Armor | API |
-| ネットワーク層（dev） | なし（意図的に公開） | API |
-| IAM層 | Service Account最小権限 | Firestore, Secret Manager, Agent Engine, API |
-| アプリケーション層 | password認証、session token検証、入力バリデーション | API |
-
-「VPNで内部通信を閉じたい」という当初の要求は、対象となるオンプレ/他VPCが存在しないため技術的に適用できない。代わりにポリシー層とIAM層で同等以上の効果を狙う（8章）。
-
----
-
-## 3. Organization Policy（Domain Restricted Sharing）
-
-### 3.1 採用するポリシー
-
-`constraints/iam.allowedPolicyMemberDomains`（Domain Restricted Sharing）を有効化する。
-
-効果：`allUsers` / `allAuthenticatedUsers` をIAMポリシーに追加しようとするAPI呼び出しそのものを拒否する（`412 Precondition Failed`）。運用担当者が誤って公開バインディングを付与しようとしても、ポリシーレベルで機械的に弾かれる。
-
-適用範囲：プロジェクト全体（Firestore、Secret Manager、Vertex AI Agent Engine、Cloud Run全てに横断的に効く）。
-
-### 3.2 devのCloud Run APIに対する例外
-
-devのCloud Run APIは意図的に公開する必要があるため、Domain Restricted Sharingの一律適用では正常にデプロイできない可能性がある。以下のいずれかで対応する。
-
-- Cloud Run側の「Invoker IAM check」を無効化する運用（Google公式に案内されている回避策）を、dev環境のみ適用する
-- または、dev用Cloud RunサービスをOrganization Policyの適用除外（exception）に明示的に加える
-
-どちらを採用するかはTerraform実装時に確定する（§9 TBD-SEC-001）。
-
-### 3.3 導入手順（概要）
-
-```bash
-# 例: プロジェクト単位でDomain Restricted Sharingを有効化
-gcloud resource-manager org-policies enable-enforce \
-  constraints/iam.allowedPolicyMemberDomains \
-  --project=<PROJECT_ID>
-```
-
-具体的な許可ドメイン・例外設定はTerraformの`org-policy`モジュール（`01_ARCHITECTURE.md` §18.2）で管理する。
-
----
-
-## 4. IAM / Service Account 権限表
-
-`02_PARAMS_DEF.md` §7のService Account一覧に対応する、実際のロールバインディング。
-
-| Service Account | ロール | 付与理由 |
-|---|---|---|
-| `api-sa` | `roles/datastore.user`（Firestore） | セッション・発話ログの読み書き |
-| `api-sa` | `roles/secretmanager.secretAccessor` | 共有password、session signing key、Gemini/Vertex AI設定の参照 |
-| `api-sa` | `roles/aiplatform.user`（Agent Engine呼び出し用） | Agent Engineへのリクエスト中継 |
-| `agent-engine-sa` | `roles/secretmanager.secretAccessor` | X API tokenの参照 |
-| `agent-engine-sa` | `roles/datastore.user` | 必要に応じてgrammar_feedback/system_eventの書き込み |
-| `agent-engine-sa` | （Vertex AI/Gemini呼び出し権限） | Agent Engine実行に必要な標準権限 |
-| `github-actions-deploy-sa` | `roles/run.admin`, `roles/artifactregistry.writer`, `roles/iam.serviceAccountUser`（対象SAへのactAs） | Cloud Run / Agent Engineへのデプロイ |
-| `terraform-sa` | IaC管理対象リソースへの`*.admin`系ロール（対象を絞り込む） | インフラのプロビジョニング |
-
-### 4.1 最小権限の原則
-
-- `agent-engine-sa`はデフォルトのCompute Engine SAを使わず、専用SAを明示的に指定する（Vertex AI Agent Engineのデプロイ時オプション）
-- 広めの権限を一時的に付与した場合は`docs/decisions/`にADRとして理由を記録し、後で縮小する（`CONTRIBUTION.md` §18.3と整合）
-
-### 4.2 Vertex AI系リソースの構造的な安全性
-
-Cloud Runと異なり、Vertex AI API（Agent Engineを含む）には`allUsers`のような匿名アクセスを許可する概念自体が存在しない。呼び出しには常に有効なGoogle認証（OAuthトークン）が必要なため、「うっかりpublicにしてしまう」というCloud Run特有の事故パターンは構造的に起きにくい。ここで注意すべきは、特定のグループ/ドメインへの過剰な権限付与であり、これは3章のOrganization Policyでカバーする。
-
----
-
-## 5. Cloud Armor設計（prd限定）
-
-> devはALB/Cloud Armorを経由しないため、本章はprdのみに適用される（`01_ARCHITECTURE.md` §5, §7参照）。
-
-### 5.1 配置
-
-```text
-Frontend (Firebase Hosting)
-  ↓
-External Application Load Balancer
-  ↓
-Cloud Armor
-  ↓
-Serverless NEG
-  ↓
-Cloud Run API (prd)
-```
-
-### 5.2 ルールセット
-
-| ルール | 内容 | 優先度 |
-|---|---|---|
-| WAF preconfigured rules | XSS、SQLi等の代表的攻撃を検知・遮断 | High |
-| rate limit `/api/session` | セッション作成の連打を抑制 | High |
-| rate limit `/api/realtime` / `/ws` | Gemini Live APIセッション濫用を抑制 | High |
-| rate limit `/api/feedback` | 会話終了時の同期フィードバック生成呼び出しの濫用を抑制 | Medium |
-| 共有ヘッダー一致（簡易フィルタ） | 正規Frontendのみが送る固定ヘッダーを要求し、無差別botのpassword総当たりを一次フィルタする | Medium |
-| block suspicious IP | 必要に応じて手動遮断 | Low |
-| default allow | 通常リクエストを許可 | High |
-
-**Serverless NEGをバックエンドとする場合、health checkリソースは設定できない**（Google Cloud仕様上非対応。Serverless NEGの死活監視はGoogle側が自動的に行う）。「health check allowlist」のようなルールは不要かつ設定不可能なため置かない。
-
-### 5.3 WAFの限界
-
-Cloud Armorは入口防御であり、アプリケーション側の入力検証・認証を代替しない。必ずアプリ側で以下を行う（`01_ARCHITECTURE.md` §7.4）。
-
-- request schema validation、入力長制限
-- session token検証（6章参照）
-- CORS制御
-- prompt injection対策、tool call schema validation（Agent Engine側）
-
----
-
-## 6. パスワード認証とネットワーク保護の関係
-
-| 層 | 何を守るか | 何を守らないか |
-|---|---|---|
-| Cloud Armor（prd） | 攻撃トラフィック、過剰アクセス、bot | password自体の正しさは検証しない |
-| password認証（アプリ層） | 「正規利用者かどうか」の一次判定 | ネットワーク経路の閉域化はしない |
-| Organization Policy | IAM経由での意図しない公開 | アプリケーションレベルの認可漏れ |
-
-3つは役割が異なり、どれか1つで代替できない。dev環境はCloud Armorを持たないため、**password認証がほぼ唯一の防御**になる点を明確に認識しておく。
-
----
-
-## 7. VPC Service Controls：見送りの判断根拠
-
-### 7.1 技術的な対応状況
-
-調査の結果、VPC-SCはFirestore・Secret Manager・**Vertex AI Agent Engineにも対応済み**であることを確認した（Agent Engineデプロイ時に、Reasoning Engine Service Agentから`storage.googleapis.com`・`artifactregistry.googleapis.com`へのingressルールを別途許可する必要がある、という制約付き）。技術的に「できない」わけではない。
-
-### 7.2 見送る理由
-
-- パーミッター設計・アクセスレベル設定・ローカル開発機からのアクセス例外設定など、設定コストがハッカソンMVPの規模に見合わない
-- 誤設定時に「意図せずロックアウトする」リスクがあり、デモ安定性を優先する`CONTRIBUTION.md`付録Bの方針と相反する
-- Organization Policy（3章）+ Cloud Run ingress制限（prd）で、想定される主要リスク（IAM誤設定による意図しない公開）は既にカバーできている
-
-### 7.3 再検討する条件
-
-- 審査・実運用で「データ境界の技術的証明」を明確に求められた場合
-- prd環境限定で、時間に余裕がある場合（devには絶対に適用しない：開発体験を著しく損なうため）
-
----
-
-## 8. Cloud VPNを採用しない理由
-
-Cloud VPNは、オンプレミス環境や他のVPCとGCPのVPCをトンネル接続するための機能である。本システムには接続すべきオンプレミス環境・他VPCが存在しないため、**技術的に適用対象がない**。
-
-「IAM設定ミスによる意図しない公開を防ぎたい」という当初の目的は、3章（Organization Policy）と`01_ARCHITECTURE.md` §16のCloud Run ingress制限で対応する。この整理はチーム内の議論記録として残す（今後同じ論点が再度上がった際に参照する）。
-
----
-
-## 9. 未決定事項
-
-| TBD ID | 内容 |
+| ID | 方針 |
 |---|---|
-| TBD-SEC-001 | devのCloud Run APIに対するOrganization Policy例外の実装方法（Invoker IAM check無効化 vs ポリシー例外） |
-| TBD-SEC-002 | `agent-engine-sa`に付与するVertex AI関連ロールの最終確定（`aiplatform.user`で十分か、カスタムロールが必要か） |
-| TBD-SEC-003 | Cloud Armor rate limitの具体的な閾値（session作成連打・Live APIセッション濫用の許容値） |
-| TBD-SEC-004 | 共有ヘッダー一致ルールで使うヘッダー名・値のローテーション方針 |
+| SEC-001 | 公開入口の防御はWAF（Cloud Armor）ではなく、アプリ層の認証（password＋短期token）とFirebase App Checkで行う |
+| SEC-002 | APIキー・署名鍵・password等はSecret Managerで一元管理し、フロントエンドやリポジトリに置かない |
+| SEC-003 | Cloud Run・Agent Engineの実行Service Accountは最小権限とする |
+| SEC-004 | ログにAPIキー・secret・不要な個人情報・音声データ本体を出力しない |
+| SEC-005 | 音声データは原則永続保存しない |
+| SEC-006 | ネットワーク境界（VPC Service Controls）に頼らず、IAM・アプリ層制御で防御する（Organization不在のため技術的にも選択肢に無い） |
 
 ---
 
-## 10. 参考資料
+## 2. 認証・認可設計
 
-- Restrict identities with domain-restricted sharing  
-  https://cloud.google.com/resource-manager/docs/organization-policy/restricting-domains
+### 2.1 ユーザー認証（password → 短期token）
 
-- VPC Service Controls supported products and limitations  
-  https://docs.cloud.google.com/vpc-service-controls/docs/supported-products
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant FE as Firebase Hosting(SPA)
+    participant API as Cloud Run API
+    participant SM as Secret Manager
 
-- Managing access for deployed agents (Vertex AI Agent Engine)  
-  https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/manage/access
+    FE->>API: POST /v1/auth (username/password)
+    API->>SM: password hash照合
+    API-->>FE: 短期access token（TTL: AUTH_TOKEN_TTL_SECONDS）
+```
 
-- Backend services overview（Serverless NEGはhealth check非対応）  
-  https://docs.cloud.google.com/load-balancing/docs/backend-service
+- ログイン機能は持たず、共有のusername/passwordをアプリ全体のゲートとして使う。
+- passwordはSecret Managerにハッシュ化して保存し、平文はどこにも保存しない。
+- 発行される短期tokenは`token-signing-secret`で署名し、REST API呼び出し時に`Authorization: Bearer`で検証する。
 
-- Cloud Armor security policy overview  
-  https://docs.cloud.google.com/armor/docs/security-policy-overview
+### 2.2 WebSocket用stream ticket
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as Cloud Run API
+
+    FE->>API: POST /v1/sessions/{id}/stream-ticket（Bearer token）
+    API-->>FE: one-time stream ticket（TTL: STREAM_TICKET_TTL_SECONDS、短命）
+    FE->>API: WS connect (?ticket=...) + App Checkトークン
+    API->>API: ticket検証（使い捨て）・App Check検証
+```
+
+- 通常のaccess tokenをWebSocket URLへ長時間露出させないため、専用の一回限りticketを発行する。
+- ticketは発行後1回の接続のみ有効とし、有効期限は短く設定する（`02_PARAMS_DEF.md` §3）。
+
+### 2.3 App Check
+
+| 項目 | 内容 |
+|---|---|
+| 本番（prd） | reCAPTCHA Enterprise。Firebase Hostingの各サイトドメインごとにキーを発行 |
+| ローカル開発・CI | debugプロバイダ。debugトークンはFirebaseコンソールで登録し、GitHub Actionsのencrypted secretsに保存する |
+| 運用ルール | debugトークンは本番ビルドに含めない、リポジトリにコミットしない、漏洩時は即座に失効する |
+| 導入方式 | `APP_CHECK_ENFORCEMENT_MODE`を`monitor`から開始し、動作確認後`enforce`へ切り替える段階導入とする |
+
+---
+
+## 3. dev環境のアクセス制御
+
+dev環境は開発者がブラウザで実際のUIとして利用できる必要があるため、以下の3層を重ねる。
+
+| 層 | 手段 | 防ぐ脅威 |
+|---|---|---|
+| プラットフォーム層 | Cloud Run `authentication required` + `roles/run.invoker`をdev環境の開発者アカウント/グループに付与 | GCPレベルでの未認可アクセス |
+| ブラウザ層 | IAP for Cloud Run（ALBを介さない直接統合） | ブラウザ経由のログイン制御。IAPがOAuthハンドシェイクを仲介し、ブラウザにIDトークンを持たせる必要がある問題を解消する |
+| アプリ層 | FastAPIのpassword認証（§2.1） | アプリレベルのゲート。IAM/IAPを突破されても最終防衛線として機能する |
+
+3層とも省略せず実装する（ユーザー確定事項）。prd環境はIAM層・IAP層を持たず、App Check＋password＋rate limitで防御する（一般公開のデモ環境のため）。
+
+---
+
+## 4. IAM / Service Account設計
+
+| Service Account | 用途 | 主な権限 |
+|---|---|---|
+| `api-sa` | Cloud Run API実行 | Firestore read/write、Secret Manager read、Cloud Tasks enqueue、Agent Engine呼び出し |
+| `agent-engine-sa` | Agent Engine実行 | Firestore read/write、Secret Manager read、Gemini/Vertex AI利用、X API呼び出し |
+| `cloud-tasks-invoker-sa` | Cloud TasksからAPI内部エンドポイントを呼ぶ専用 | 当該Cloud Run serviceのInvokerのみ |
+| `github-actions-deploy-sa` | frontend/api/agent/terraformのデプロイ | Artifact Registry push、Cloud Run deploy、Firebase Hosting deploy、必要なSAへのactAs |
+| `terraform-sa` | Terraform実行（bootstrap含む） | IaC管理対象リソースの作成・更新権限 |
+
+広めの権限を一時的に付与する場合は理由をIssueに記録し、後続で縮小する。
+
+---
+
+## 5. Secret Manager設計
+
+詳細は`02_PARAMS_DEF.md` §4を参照。参照可能なコンポーネントは`api-sa`・`agent-engine-sa`のみとし、Frontendおよび`github-actions-deploy-sa`（デプロイのみ行うため）には秘密情報へのアクセス権を付与しない。
+
+---
+
+## 6. レート制限・バックプレッシャー
+
+Cloud Armorを採用しないため、以下の4層でコスト濫用・過負荷を防ぐ。
+
+| 層 | 内容 |
+|---|---|
+| アプリ層rate limit | `RATE_LIMIT_PER_IP_PER_MINUTE`（dev/prd共通で厳しめに設定） |
+| Cloud Run同時実行制御 | `concurrency`/`max-instances`で上限を設定 |
+| セッション数バックプレッシャー | `MAX_CONCURRENT_SESSIONS`超過時は`429 + Retry-After`を返す |
+| Cloud Tasksキューのレート制御 | `max_concurrent_dispatches`/`max_dispatches_per_second`でX API/Gemini呼び出しのバーストを吸収 |
+
+「確実な実行の保証」ではなく「過負荷保護」が目的である点に注意する（`docs/BASIC_DESIGN.md` §11 JOB-004と整合）。
+
+---
+
+## 7. データ保護方針
+
+| データ | 保存方針 |
+|---|---|
+| 音声データ | 原則保存しない |
+| 文字起こし・AI発話テキスト | セッション復習用にFirestoreへ保存可（24h TTL） |
+| 文法フィードバック・Review | 同上 |
+| secret | Firestoreに保存しない。Secret Manager限定 |
+| system event/ログ | デバッグ・監視用に保存。個人識別情報は含めない |
+
+Firestoreへのアクセス制御はIAM・Service Accountベースであり、ネットワーク境界（VPC Service Controls）には依存しない設計とする（理由は§8）。
+
+---
+
+## 8. 採用しなかった対策とその理由
+
+技術的な詳細は`01_ARCHITECTURE.md` §7を正とし、ここではセキュリティ観点での結論のみ要約する。
+
+| 対策 | 不採用の理由（要約） |
+|---|---|
+| Cloud Armor（WAF） | 独自ドメインが前提となり、方針（ドメイン非取得）と矛盾する |
+| API Gatewayでの認証認可集約 | WebSocketが通らず、FastAPIミドルウェアと機能が重複する |
+| VPC Service Controls | Organization配下でないプロジェクトでは技術的に利用不可 |
+| VPCでFirestore等を包囲 | Firestore/Secret Manager/Vertex AIのアクセス制御は元々IAMベースであり、VPCに置くこと自体は保護に寄与しない |
+
+---
+
+## 9. 残存リスクと軽減策
+
+| リスク | 軽減策 |
+|---|---|
+| WAFが無いことによる既知の攻撃パターン（XSS/SQLi等）への露出 | アプリ側でのinput validation、FastAPIのスキーマバリデーション、出力エスケープを徹底する |
+| ネットワーク層でのデータ持ち出し防止が無い | IAMの最小権限徹底、Secret Managerでのsecret一元管理、監査ログ（Cloud Logging）でカバーする |
+| App Check debugトークン漏洩 | GitHub Actions encrypted secretsで管理し、定期的な棚卸し・失効を行う |
+| password/tokenの漏洩 | 短期TTL、Secret Managerでのハッシュ管理、rate limitとの併用で被害を限定する |
+
+---
+
+## 10. 未決定事項
+
+| TBD ID | 内容 | 判断観点 |
+|---|---|---|
+| TBD-SEC-001 | IAP for Cloud Runの具体的なOAuth同意画面設定・許可アカウント範囲 | 開発者アカウントの管理方法 |
+| TBD-SEC-002 | App Check `enforce`モードへの切り替えタイミング | 動作検証の完了度合い |
+| TBD-SEC-003 | rate limitの具体的な閾値 | デモ利用シナリオでの実測に基づき決定 |
