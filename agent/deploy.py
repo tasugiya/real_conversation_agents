@@ -60,6 +60,10 @@ def main() -> None:
         required=True,
         help="gs://... bucket for build artifacts. Required by agent_engines.create()/"
         "update() even with Inline Source Deployment.",
+        # NOTE: the SA passed via --service-account (and the CI identity
+        # running this script) needs roles/storage.admin on this bucket, not
+        # just roles/storage.objectAdmin -- create()/update() calls
+        # storage_client.get_bucket(), which requires storage.buckets.get.
     )
     args = parser.parse_args()
 
