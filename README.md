@@ -1,2 +1,2 @@
 # real_conversation_agents
-This is the ripo of hackathon by Findy
+The ripo for AI Agent × DevOps Hackathon by Findy
