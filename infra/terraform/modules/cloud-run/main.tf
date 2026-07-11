@@ -3,10 +3,11 @@
 # lifecycle.ignore_changesでTerraform管理外にする。
 
 resource "google_cloud_run_v2_service" "this" {
-  name     = var.service_name
-  project  = var.project_id
-  location = var.region
-  ingress  = var.ingress
+  name        = var.service_name
+  project     = var.project_id
+  location    = var.region
+  ingress     = var.ingress
+  iap_enabled = var.iap_enabled
 
   template {
     service_account = var.service_account_email

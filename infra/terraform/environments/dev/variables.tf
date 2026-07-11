@@ -65,8 +65,8 @@ variable "cloud_run_timeout_seconds" {
 
 variable "cloud_run_allow_unauthenticated" {
   type        = bool
-  description = "devはIAM認証を要求するためfalse固定（docs/infra/03_SECURITY.md §3）"
-  default     = false
+  description = "IAM認証必須にするとブラウザから到達できない（ブラウザは素のfetchでGCPのIDトークンを付けられない）。IAP for Cloud Runで橋渡しする案は一旦見送り、prdと同じApp Check＋password＋rate limitの2層に揃えるためtrue（docs/infra/03_SECURITY.md §3・§4）"
+  default     = true
 }
 
 variable "dev_invoker_members" {
@@ -83,7 +83,7 @@ variable "github_actions_deploy_sa_email" {
 variable "agent_engine_resource_name" {
   type        = string
   description = "agent/deploy.py（create）実行後に確定するAgent Engineのresource_name。以降はupdateで同じ値を使い続ける"
-  default     = ""
+  default     = "projects/11418767319/locations/us-central1/reasoningEngines/8246617034029268992"
 }
 
 variable "firebase_project_id" {
@@ -94,8 +94,8 @@ variable "firebase_project_id" {
 
 variable "cors_allowed_origins" {
   type        = string
-  description = "許可するfrontendオリジン（Firebase HostingのURL）"
-  default     = ""
+  description = "許可するfrontendオリジン（Firebase HostingのURL、カンマ区切り。.web.app/.firebaseapp.comの両方を許可する）"
+  default     = "https://real-conversation-agents-dev.web.app,https://real-conversation-agents-dev.firebaseapp.com"
 }
 
 variable "app_check_enforcement_mode" {

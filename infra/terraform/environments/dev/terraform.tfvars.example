@@ -13,7 +13,7 @@ cloud_run_min_instances        = 0
 cloud_run_max_instances        = 2
 cloud_run_concurrency          = 20
 cloud_run_timeout_seconds      = 3600
-cloud_run_allow_unauthenticated = false
+cloud_run_allow_unauthenticated = true
 
 # dev環境をIAM認証で叩ける開発者をここに列挙する（例: "user:you@example.com"）
 dev_invoker_members = []
@@ -31,7 +31,7 @@ agent_engine_resource_name = ""
 firebase_project_id = "real-conversation-agents"
 
 # frontendのFirebase Hosting URL（dev用サイト）
-cors_allowed_origins = ""
+cors_allowed_origins = "https://real-conversation-agents-dev.web.app,https://real-conversation-agents-dev.firebaseapp.com"
 
 app_check_enforcement_mode   = "monitor"
 auth_token_ttl_seconds       = 3600

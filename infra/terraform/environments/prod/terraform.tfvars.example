@@ -26,7 +26,7 @@ agent_engine_resource_name = ""
 firebase_project_id = "real-conversation-agents"
 
 # frontendのFirebase Hosting URL（prod用サイト）
-cors_allowed_origins = ""
+cors_allowed_origins = "https://real-conversation-agents.web.app,https://real-conversation-agents.firebaseapp.com"
 
 app_check_enforcement_mode   = "enforce"
 auth_token_ttl_seconds       = 3600

@@ -65,3 +65,9 @@ variable "allow_unauthenticated" {
   description = "trueの場合allUsersにroles/run.invokerを付与する（prd想定）。devではfalseにしIAM認証を要求する"
   default     = false
 }
+
+variable "iap_enabled" {
+  type        = bool
+  description = "trueの場合Cloud Run直付けのIdentity-Aware Proxyを有効化する（dev想定）。ブラウザのOAuthログインを仲介し、authentication requiredのままブラウザからアクセスできるようにする（docs/infra/03_SECURITY.md §3・§4）"
+  default     = false
+}

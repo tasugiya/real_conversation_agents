@@ -88,8 +88,8 @@ variable "firebase_project_id" {
 
 variable "cors_allowed_origins" {
   type        = string
-  description = "許可するfrontendオリジン（Firebase HostingのURL）"
-  default     = ""
+  description = "許可するfrontendオリジン（Firebase HostingのURL、カンマ区切り。.web.app/.firebaseapp.comの両方を許可する）"
+  default     = "https://real-conversation-agents.web.app,https://real-conversation-agents.firebaseapp.com"
 }
 
 variable "app_check_enforcement_mode" {
