@@ -84,11 +84,15 @@ jobs:
   # (!cancelled() で「デプロイ先ジョブがfailureでない限り続行」を明示している)
 
   deploy-frontend:
-    needs: [changes, deploy-infra]
+    # deploy-apiにも依存する: frontendのbuild時にAPIの実URLをVITE_API_BASE_URLへ
+    # 埋め込むため（Cloud RunサービスはTerraformが既に作成済みの前提。
+    # api未変更でdeploy-apiがskippedでも、既存サービスのURLは取得できる）。
+    needs: [changes, deploy-infra, deploy-api]
     if: |
       !cancelled() &&
       needs.changes.outputs.frontend == 'true' &&
-      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped') &&
+      (needs.deploy-api.result == 'success' || needs.deploy-api.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ needs.changes.outputs.environment }}
     permissions:
@@ -96,13 +100,51 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
-      # TODO: frontend/コード追加後、build + firebase deploy --only hosting:<site>に置き換える
-      - name: placeholder
-        run: echo "frontend deploy is not yet implemented."
+          # Firebase CLI reads Application Default Credentials from this file
+          # instead of FIREBASE_TOKEN / a service account key.
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: resolve deployed API URL
+        id: api_url
+        run: |
+          URL=$(gcloud run services describe "real-conv-api-${{ needs.changes.outputs.environment }}" \
+            --region=us-central1 \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - working-directory: frontend
+        env:
+          VITE_API_BASE_URL: ${{ steps.api_url.outputs.url }}
+          VITE_USE_MOCK_API: "false"
+        run: pnpm build
+
+      - run: npm install -g firebase-tools
+
+      - name: deploy to Firebase Hosting
+        run: >
+          firebase deploy --only hosting:${{ needs.changes.outputs.environment }}
+          --project=${{ vars.GCP_PROJECT_ID }} --non-interactive
 
   deploy-api:
     needs: [changes, deploy-infra]
@@ -151,15 +193,51 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # agent-engine-sa-{dev,prod} was created by Terraform (modules/iam).
+      # gha-deploy-sa already has roles/iam.serviceAccountUser on it
+      # (environments/{dev,prod}/main.tf's gha_act_as_agent_engine binding),
+      # so it can deploy a Reasoning Engine that runs as this identity.
+      AGENT_ENGINE_SA_EMAIL: agent-engine-sa-${{ needs.changes.outputs.environment }}@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+      DISPLAY_NAME: real-conv-agent-${{ needs.changes.outputs.environment }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
-      # TODO: agent/コード追加後、python agent/deploy.py (agent_engines.create/update) に置き換える
-      - name: placeholder
-        run: echo "agent deploy is not yet implemented."
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - working-directory: agent
+        run: pip install -r requirements.txt
+
+      - name: deploy agent (create on first run, update afterwards)
+        working-directory: agent
+        run: |
+          python deploy.py \
+            --project-id "${{ vars.GCP_PROJECT_ID }}" \
+            --region us-central1 \
+            --service-account "$AGENT_ENGINE_SA_EMAIL" \
+            --display-name "$DISPLAY_NAME" \
+            | tee deploy-output.txt
+
+      - name: surface resource_name in the run summary
+        working-directory: agent
+        run: |
+          RESOURCE_NAME=$(grep '^AGENT_ENGINE_RESOURCE_NAME=' deploy-output.txt | cut -d= -f2-)
+          {
+            echo "### Agent Engine resource_name (${{ needs.changes.outputs.environment }})"
+            echo '```'
+            echo "$RESOURCE_NAME"
+            echo '```'
+            echo "If this is the first deploy for this environment, copy this value into"
+            echo "infra/terraform/environments/${{ needs.changes.outputs.environment }}/terraform.tfvars's"
+            echo "agent_engine_resource_name and re-apply, so the API picks it up too."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: [changes, deploy-infra, deploy-frontend, deploy-api, deploy-agent]

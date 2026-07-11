@@ -43,9 +43,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TODO: frontend/package.json追加後、実際のlint/typecheck/build/testステップに置き換える
-      - name: placeholder
-        run: echo "frontend code is not yet added. Replace this step with npm ci / lint / typecheck / build / test."
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - working-directory: frontend
+        # `tsc -b` (typecheck) runs as part of the build script itself
+        run: pnpm build
 
   api-ci:
     needs: changes
