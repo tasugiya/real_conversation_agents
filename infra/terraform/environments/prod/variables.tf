@@ -23,12 +23,12 @@ variable "firestore_database_id" {
 
 variable "secret_ids" {
   type        = list(string)
-  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）"
+  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）。単一プロジェクト内でdev/prodが同じシークレット名を取り合わないよう環境サフィックスを付ける"
   default = [
-    "shared-auth-username",
-    "shared-auth-password-hash",
-    "token-signing-secret",
-    "x-api-bearer-token",
+    "shared-auth-username-prod",
+    "shared-auth-password-hash-prod",
+    "token-signing-secret-prod",
+    "x-api-bearer-token-prod",
   ]
 }
 
