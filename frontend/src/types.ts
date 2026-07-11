@@ -1,0 +1,10 @@
+export type InputMode = "audio" | "text";
+export type OutputMode = "audio_and_text" | "text_only";
+export type Topic = { topic_id: string; title: string };
+export type TopicPack = { topic_pack_id: string; topic_id: string; status: "pending" | "ready" | "failed"; overview?: string; discussion_axes: string[]; user_cheat_sheet: string[]; is_dummy: boolean };
+export type Session = { session_id: string; status: string; participants: string[] };
+export type GrammarFeedback = { utterance_id?: string | null; original: string; suggestion: string; explanation_ja: string; severity: string };
+export type Review = { session_id: string; summary: string; score_total: number; grammar_feedback: GrammarFeedback[] };
+export type ConversationMessage = { id: string; speakerId: "user" | "alice" | "bob" | "system"; text: string; status?: "streaming" | "final" | "error" };
+export type StreamEvent = { type: string; speaker_id?: string; text?: string; message?: string };
+export type StreamConnection = { sendText: (text: string) => void; startSpeech: () => void; sendAudio: (audio: Blob) => void; endSpeech: () => void; interrupt: () => void; close: () => void };
