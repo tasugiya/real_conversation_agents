@@ -147,10 +147,11 @@ jobs:
         run: echo "agent deploy is not yet implemented."
 
   release:
-    needs: [changes, deploy-frontend, deploy-api, deploy-agent]
+    needs: [changes, deploy-infra, deploy-frontend, deploy-api, deploy-agent]
     if: |
       !cancelled() &&
       needs.changes.outputs.environment == 'prod' &&
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped') &&
       (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
       (needs.deploy-api.result == 'success' || needs.deploy-api.result == 'skipped') &&
       (needs.deploy-agent.result == 'success' || needs.deploy-agent.result == 'skipped')
