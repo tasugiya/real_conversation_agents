@@ -58,6 +58,15 @@ resource "google_storage_bucket_iam_member" "terraform_state_admin" {
   member = "serviceAccount:${google_service_account.terraform.email}"
 }
 
+# roles/editorはCloud Runサービス単位のsetIamPolicyを意図的に含まないため
+# （Editorロールの既知の権限除外）、google_cloud_run_v2_service_iam_memberの
+# 適用にはrun.adminを別途付与する必要がある。
+resource "google_project_iam_member" "terraform_run_admin" {
+  project = var.project_id
+  role    = "roles/run.admin"
+  member  = "serviceAccount:${google_service_account.terraform.email}"
+}
+
 # --- GitHub Actionsデプロイ用Service Account（frontend/api/agent共通の1つ） ---
 resource "google_service_account" "github_actions_deploy" {
   project      = var.project_id
@@ -93,16 +102,16 @@ resource "google_project_iam_member" "gha_aiplatform_user" {
 # infra/terraform/modules/workload-identity-federationを、bootstrapからのみ呼び出す
 # （docs/infra/01_ARCHITECTURE.md §2、モジュール内コメント参照）。
 module "wif" {
-  source                = "../terraform/modules/workload-identity-federation"
-  project_id            = var.project_id
-  github_repository     = var.github_repository
-  service_account_name  = google_service_account.terraform.name
+  source               = "../terraform/modules/workload-identity-federation"
+  project_id           = var.project_id
+  github_repository    = var.github_repository
+  service_account_name = google_service_account.terraform.name
 }
 
 # terraform-sa用のimpersonationはmodule.wifが作成する。
 # github-actions-deploy-sa用にも同じPoolへのimpersonationを追加で許可する。
 resource "google_service_account_iam_member" "wif_impersonation_gha_deploy" {
   service_account_id = google_service_account.github_actions_deploy.name
-  role                = "roles/iam.workloadIdentityUser"
-  member              = "principalSet://iam.googleapis.com/${module.wif.pool_name}/attribute.repository/${var.github_repository}"
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${module.wif.pool_name}/attribute.repository/${var.github_repository}"
 }
