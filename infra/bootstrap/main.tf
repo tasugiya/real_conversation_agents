@@ -67,6 +67,15 @@ resource "google_project_iam_member" "terraform_run_admin" {
   member  = "serviceAccount:${google_service_account.terraform.email}"
 }
 
+# 同様にroles/editorはサービスアカウント単位のsetIamPolicyも含まないため、
+# google_service_account_iam_member（api-saのtasks-invoker-saへのactAs付与など）の
+# 適用にはiam.serviceAccountAdminを別途付与する必要がある。
+resource "google_project_iam_member" "terraform_service_account_admin" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountAdmin"
+  member  = "serviceAccount:${google_service_account.terraform.email}"
+}
+
 # --- GitHub Actionsデプロイ用Service Account（frontend/api/agent共通の1つ） ---
 resource "google_service_account" "github_actions_deploy" {
   project      = var.project_id
