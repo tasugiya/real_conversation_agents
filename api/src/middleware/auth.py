@@ -22,9 +22,16 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 STREAM_TICKETS_COLLECTION = "stream_tickets"
 
 
+def _secret_id(name: str) -> str:
+    """Secret names are suffixed per environment (-dev / -prod) since dev and
+    prod share a single GCP project; unsuffixed names would collide
+    (docs/infra/02_PARAMS_DEF.md §4)."""
+    return f"{name}-{get_settings().environment}"
+
+
 def verify_password(username: str, password: str) -> bool:
-    expected_username = get_secret("shared-auth-username")
-    password_hash = get_secret("shared-auth-password-hash")
+    expected_username = get_secret(_secret_id("shared-auth-username"))
+    password_hash = get_secret(_secret_id("shared-auth-password-hash"))
     if not secrets.compare_digest(username, expected_username):
         return False
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
@@ -32,7 +39,7 @@ def verify_password(username: str, password: str) -> bool:
 
 def issue_access_token() -> tuple[str, datetime]:
     settings = get_settings()
-    signing_secret = get_secret("token-signing-secret")
+    signing_secret = get_secret(_secret_id("token-signing-secret"))
     expires_at = datetime.now(timezone.utc) + timedelta(
         seconds=settings.auth_token_ttl_seconds
     )
@@ -45,7 +52,7 @@ def issue_access_token() -> tuple[str, datetime]:
 
 
 def _decode_token(token: str) -> dict:
-    signing_secret = get_secret("token-signing-secret")
+    signing_secret = get_secret(_secret_id("token-signing-secret"))
     try:
         return jwt.decode(token, signing_secret, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
