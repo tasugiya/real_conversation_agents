@@ -184,8 +184,20 @@
 
 | 名前 | 種別 | 備考 |
 |---|---|---|
-| `GCP_PROJECT_ID` | Variable | |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | WIFのフルリソースパス |
-| `GCP_SERVICE_ACCOUNT_EMAIL`(環境別) | Variable | GitHub Environmentごとに分離 |
+| `GCP_PROJECT_ID` | Variable | 単一プロジェクト方針のためdev/prod共通の1値 |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | WIFのフルリソースパス（`infra/bootstrap/`の出力） |
+| `GCP_TERRAFORM_SERVICE_ACCOUNT_EMAIL` | Variable | `terraform-sa`のメールアドレス（`infra/bootstrap/`の出力）。ci.yml/cd.ymlのterraform plan/apply認証に使用 |
+| `GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL` | Variable | `github-actions-deploy-sa`のメールアドレス（`infra/bootstrap/`の出力）。frontend/api/agentデプロイの認証に使用 |
 | `APP_CHECK_DEBUG_TOKEN_FROM_CI` | Secret | mock E2EやCIでのApp Check通過用 |
 | `FIREBASE_PROJECT_ID` | Variable | |
+
+### 13.1 terraform.tfvarsとCIの関係
+
+`terraform.tfvars`は`.gitignore`で除外しローカル専用とする（`*.tfvars.example`のみcommitする）。CIはこの値をファイルではなく`TF_VAR_<変数名>`環境変数で渡す。
+
+| Terraform変数 | CI側の環境変数 | 値の由来 |
+|---|---|---|
+| `project_id` | `TF_VAR_project_id` | `vars.GCP_PROJECT_ID` |
+| `github_actions_deploy_sa_email` | `TF_VAR_github_actions_deploy_sa_email` | `vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL` |
+
+その他の変数（`region`、`cloud_run_min_instances`等）は各`variables.tf`にdefaultを設定済みのため、CI・ローカルとも明示的な値指定は必須ではない。
