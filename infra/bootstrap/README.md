@@ -33,8 +33,10 @@ terraform apply
 terraform output
 
 # 3. 作成されたバケットへ、このbootstrap自身のstateを移行する
-#    （ローカルにのみ残さず、チームで後から参照・変更できるようにするため）
-cat > backend_migrate.tf <<'EOF'
+#    backend.tfは削除せず恒久的に残し、後でcommitする
+#    （environments/dev, environments/prodと同じ扱い。削除すると次回initで
+#      ローカルstateに戻ってしまい、チームで状態を共有できなくなる）
+cat > backend.tf <<'EOF'
 terraform {
   backend "gcs" {
     bucket = "<terraform outputのstate_bucket_nameの値>"
@@ -44,8 +46,11 @@ terraform {
 EOF
 
 terraform init -migrate-state
-rm backend_migrate.tf   # migrate後は不要（設定はbackend.tf相当として別途正式に残す場合はそちらへ）
+# プロンプトで「Do you want to copy existing state to the new backend?」と聞かれるので
+# 内容を確認して yes と入力する（自動化しない）
 ```
+
+migrate完了後、`backend.tf`（実際のbucket名入り）はcommitして問題ない（bucket名やprefixは秘密情報ではない）。`terraform.tfvars`だけがローカル専用。
 
 ## 実行後にやること
 
