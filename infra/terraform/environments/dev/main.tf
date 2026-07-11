@@ -149,12 +149,12 @@ resource "google_storage_bucket" "agent_staging" {
 
 resource "google_storage_bucket_iam_member" "agent_staging_gha_deploy" {
   bucket = google_storage_bucket.agent_staging.name
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.admin"
   member = "serviceAccount:${var.github_actions_deploy_sa_email}"
 }
 
 resource "google_storage_bucket_iam_member" "agent_staging_agent_engine" {
   bucket = google_storage_bucket.agent_staging.name
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.admin"
   member = "serviceAccount:${module.iam.agent_engine_sa_email}"
 }
