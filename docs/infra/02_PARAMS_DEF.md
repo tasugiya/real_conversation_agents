@@ -81,12 +81,14 @@
 
 ## 4. API向けSecret Manager格納値
 
+シークレット名は`-dev`/`-prod`の環境サフィックス付き（例: `shared-auth-username-dev`）。単一プロジェクト内でdev/prodが同じシークレット名を取り合わないようにするため（`infra/terraform/environments/*/variables.tf`の`secret_ids`）。APIコード側も`api/src/middleware/auth.py`の`_secret_id()`で`ENVIRONMENT`を見て自動的にサフィックスを付ける。
+
 | シークレット名 | 内容 | 備考 |
 |---|---|---|
-| `shared-auth-username` / `shared-auth-password-hash` | password認証 | 平文パスワードではなくハッシュを保存 |
-| `token-signing-secret` | 短期token/stream ticket署名鍵 | 環境ごとに別値必須 |
-| `x-api-bearer-token` | X API認証 | |
-| `app-check-debug-token`（devのみ） | ローカル/CI用 | 本番では使わない |
+| `shared-auth-username-{dev,prod}` / `shared-auth-password-hash-{dev,prod}` | password認証 | 平文パスワードではなくハッシュを保存 |
+| `token-signing-secret-{dev,prod}` | 短期token/stream ticket署名鍵 | 環境ごとに別値必須 |
+| `x-api-bearer-token-{dev,prod}` | X API認証 | 現状ダミー実装のため未使用 |
+| `app-check-debug-token-dev`（devのみ） | ローカル/CI用 | 本番では使わない |
 
 ---
 

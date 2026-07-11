@@ -7,7 +7,7 @@ project_id = "real-conversation-agents"
 region     = "us-central1"
 environment = "dev"
 
-firestore_database_id = "dev"
+firestore_database_id = "dev-db"
 
 cloud_run_min_instances        = 0
 cloud_run_max_instances        = 2

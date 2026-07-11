@@ -17,19 +17,19 @@ variable "environment" {
 
 variable "firestore_database_id" {
   type        = string
-  description = "Firestoreデータベース名（マルチデータベースでdev/prodを分離）"
-  default     = "dev"
+  description = "Firestoreデータベース名（マルチデータベースでdev/prodを分離）。4〜63文字必要なため'dev'単体は不可"
+  default     = "dev-db"
 }
 
 variable "secret_ids" {
   type        = list(string)
-  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）"
+  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）。単一プロジェクト内でdev/prodが同じシークレット名を取り合わないよう環境サフィックスを付ける"
   default = [
-    "shared-auth-username",
-    "shared-auth-password-hash",
-    "token-signing-secret",
-    "x-api-bearer-token",
-    "app-check-debug-token",
+    "shared-auth-username-dev",
+    "shared-auth-password-hash-dev",
+    "token-signing-secret-dev",
+    "x-api-bearer-token-dev",
+    "app-check-debug-token-dev",
   ]
 }
 
