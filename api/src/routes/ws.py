@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
-from ..middleware.app_check import verify_app_check_token
 from ..middleware.auth import consume_stream_ticket
 from ..services import firestore_client
 from ..services.agent_engine_client import AgentLiveSession
@@ -33,13 +32,13 @@ DISPLAY_EVENTS_COLLECTION = "display_events"
 
 @router.websocket("/v1/sessions/{session_id}/stream")
 async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
+    # App Check is enforced when the ticket is issued (POST .../stream-ticket
+    # requires it), not here -- browsers' native WebSocket API can't attach a
+    # custom header to the handshake, so re-checking at this layer would be
+    # both redundant and unsatisfiable from a real browser client.
     if not consume_stream_ticket(ticket, session_id):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-
-    # FastAPI's Depends()-based header injection doesn't apply to websocket
-    # routes the same way it does to REST, so App Check is verified directly.
-    await verify_app_check_token(websocket.headers.get("x-firebase-appcheck"))
 
     doc = firestore_client.get_document(SESSIONS_COLLECTION, session_id)
     if doc is None:

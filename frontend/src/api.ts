@@ -1,3 +1,4 @@
+import { getAppCheckToken } from "./firebase";
 import type { InputMode, OutputMode, Review, Session, StreamConnection, StreamEvent, Topic, TopicPack } from "./types";
 
 const configuredMock = import.meta.env.VITE_USE_MOCK_API;
@@ -11,7 +12,8 @@ const mockSessions = new Map<string, { session: Session; userTexts: string[] }>(
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 
 async function request<T>(path: string, token: string | null, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init?.headers ?? {}) } });
+  const appCheckToken = await getAppCheckToken();
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(appCheckToken ? { "X-Firebase-AppCheck": appCheckToken } : {}), ...(init?.headers ?? {}) } });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail || `Request failed (${response.status})`);
