@@ -1,20 +1,21 @@
-# リアルな複数人英会話トレーニングエージェント パラメータ定義書
+# リアルな複数人英会話トレーニングエージェント 設定パラメータ定義書
 
 ## 目次
 
 - [0. 文書情報](#0-文書情報)
-- [1. 本書の目的](#1-本書の目的)
-- [2. 命名規則](#2-命名規則)
-- [3. GCPプロジェクト](#3-gcpプロジェクト)
-- [4. リージョン](#4-リージョン)
-- [5. Cloud Runサービス](#5-cloud-runサービス)
-- [6. Vertex AI Agent Engine](#6-vertex-ai-agent-engine)
-- [7. Service Account](#7-service-account)
-- [8. Firestore](#8-firestore)
-- [9. Secret Manager](#9-secret-manager)
-- [10. 環境変数](#10-環境変数)
-- [11. Terraform variables](#11-terraform-variables)
-- [12. 未決定事項](#12-未決定事項)
+- [1. リージョン・環境識別](#1-リージョン環境識別)
+- [2. Frontend（Firebase Hosting / Vite envs）](#2-frontendfirebase-hosting--vite-envs)
+- [3. API（Cloud Run）環境変数](#3-apicloud-run環境変数)
+- [4. API向けSecret Manager格納値](#4-api向けsecret-manager格納値)
+- [5. Cloud Tasks](#5-cloud-tasks)
+- [6. Agent Engine（ADK）](#6-agent-engineadk)
+- [7. Firestore](#7-firestore)
+- [8. App Check](#8-app-check)
+- [9. IAM / Service Account](#9-iam--service-account)
+- [10. Workload Identity Federation / Artifact Registry](#10-workload-identity-federation--artifact-registry)
+- [11. コスト管理・監視](#11-コスト管理監視)
+- [12. Terraform変数](#12-terraform変数)
+- [13. GitHub Actions Variables/Secrets](#13-github-actions-variablessecrets)
 
 ---
 
@@ -22,181 +23,169 @@
 
 | 項目 | 内容 |
 |---|---|
-| 文書名 | リアルな複数人英会話トレーニングエージェント パラメータ定義書 |
+| 文書名 | リアルな複数人英会話トレーニングエージェント 設定パラメータ定義書 |
 | 版数 | v0.1 |
-| 作成日 | 2026-07-09 |
-| 関連文書 | `docs/infra/01_ARCHITECTURE.md`, `docs/infra/03_SECURITY.md`, `docs/infra/04_DEPLOY.md` |
-| 位置づけ | `01_ARCHITECTURE.md`で決定した構成の、具体的な命名・パラメータを定義する |
-
-**本書時点では、実際のGCPプロジェクトID・リージョン等の値は未確定である。** 本書は命名規則とプレースホルダーを定義し、値が確定次第「12. 未決定事項」を解消していく形で更新する。
+| 作成日 | 2026-07-11 |
+| 前提文書 | `docs/infra/00_OVERVIEW.md`、`docs/infra/01_ARCHITECTURE.md` |
 
 ---
 
-## 1. 本書の目的
+## 1. リージョン・環境識別
 
-`01_ARCHITECTURE.md`が「何を・どう繋ぐか」を定義するのに対し、本書は「実際に何と名付けるか」を定義する。Terraform実装、CI/CDパイプライン、手動セットアップ手順で、この命名規則を一貫して使用する。
+| パラメータ | 種別 | dev例 | prd例 | 備考 |
+|---|---|---|---|---|
+| `GCP_PROJECT_ID` | 共通 | `real-conv-agents` | 同左 | 単一プロジェクト方針（`00_OVERVIEW.md` §4） |
+| `GCP_REGION` | 共通 | `us-central1` | `us-central1` | `asia-northeast1`はGemini Live APIのProvisioned Throughput制約要検証（`00_OVERVIEW.md` §5） |
+| `ENVIRONMENT` | env var | `dev` | `prd` | ログ・アプリ内分岐用 |
 
 ---
 
-## 2. 命名規則
+## 2. Frontend（Firebase Hosting / Vite envs）
 
-### 2.1 基本パターン
-
-```text
-{project-prefix}-{component}-{env}
-```
-
-| 要素 | 内容 | 例 |
+| パラメータ | 種別 | 備考 |
 |---|---|---|
-| `project-prefix` | プロジェクト共通の短縮名 | `real-conv` （仮。確定させる） |
-| `component` | コンポーネント種別 | `api`, `fe`, `agent` 等 |
-| `env` | 環境 | `dev`, `prd`（stg導入時は`stg`も追加） |
+| `VITE_API_BASE_URL` | build env | Cloud Run APIのrun.app URL（環境別） |
+| `VITE_WS_BASE_URL` | build env | `wss://`エンドポイント |
+| `VITE_FIREBASE_API_KEY` / `VITE_FIREBASE_AUTH_DOMAIN` / `VITE_FIREBASE_PROJECT_ID` / `VITE_FIREBASE_APP_ID` | build env | Firebase SDK設定（App Check用） |
+| `VITE_RECAPTCHA_ENTERPRISE_SITE_KEY` | build env | 環境別（Hosting siteのドメインごとにキー登録） |
+| `VITE_APP_CHECK_DEBUG_TOKEN` | local専用 | `.env.local`のみ。commit禁止 |
+| `VITE_ENVIRONMENT` | build env | UI上のdev/prdバナー表示用 |
+| `VITE_SESSION_MAX_DURATION_SECONDS` | build env | `600`。カウントダウンUI用 |
+| `VITE_MIC_PERMISSION_HELP_URL` | build env | マイク権限エラー時の案内リンク（任意） |
 
-環境名は要件定義・基本設計・CONTRIBUTION.mdとの用語統一のため、**`prod`ではなく`prd`** を正式表記とする（既存ドキュメントに`prod`表記が残っている箇所は今後統一する。§12参照）。
+---
 
-### 2.2 リソース種別ごとの接頭辞
+## 3. API（Cloud Run）環境変数
 
-| リソース種別 | 接頭辞/パターン |
+| パラメータ | dev例 | prd例 | 備考 |
+|---|---|---|---|
+| `GCP_PROJECT_ID` / `GCP_REGION` / `ENVIRONMENT` | §1参照 | | |
+| `PORT` | `8080` | `8080` | Cloud Run既定 |
+| `AGENT_ENGINE_RESOURCE_NAME` | `projects/.../reasoningEngines/{dev_id}` | `.../{prd_id}` | agentデプロイ後にCI変数として注入 |
+| `FIRESTORE_DATABASE_ID` | `dev` | `(default)` | マルチデータベースで分離 |
+| `CORS_ALLOWED_ORIGINS` | dev Hosting URL | prd Hosting URL | |
+| `AUTH_TOKEN_TTL_SECONDS` | `3600` | `3600` | password認証後の短期token |
+| `STREAM_TICKET_TTL_SECONDS` | `60` | `60` | WebSocket接続用one-time ticket |
+| `SESSION_MAX_DURATION_SECONDS` | `600` | `600` | MVP方針の10分上限 |
+| `MAX_CONCURRENT_SESSIONS` | 小さめ（例`5`） | 審査時想定に合わせて調整 | 超過時429+Retry-After |
+| `RATE_LIMIT_PER_IP_PER_MINUTE` | 厳しめ | 厳しめ | dev/prd共通で厳しめに統一（確定） |
+| `CLOUD_RUN_MIN_INSTANCES` | `0` | `1`（コールドスタート回避） | deploy設定 |
+| `CLOUD_RUN_MAX_INSTANCES` | 小さめ | コスト上限に応じて設定 | deploy設定 |
+| `CLOUD_RUN_CONCURRENCY` | 要検証 | 同左 | WebSocket保持数に直結 |
+| `CLOUD_RUN_REQUEST_TIMEOUT_SECONDS` | `3600` | `3600` | WebSocket用に長め（上限60分） |
+| `APP_CHECK_ENFORCEMENT_MODE` | `monitor`（当初） | `enforce` | 段階導入 |
+| `FIREBASE_PROJECT_ID` | | | App Checkトークン検証用 |
+| `LOG_LEVEL` | `debug` | `info` | |
+
+---
+
+## 4. API向けSecret Manager格納値
+
+| シークレット名 | 内容 | 備考 |
+|---|---|---|
+| `shared-auth-username` / `shared-auth-password-hash` | password認証 | 平文パスワードではなくハッシュを保存 |
+| `token-signing-secret` | 短期token/stream ticket署名鍵 | 環境ごとに別値必須 |
+| `x-api-bearer-token` | X API認証 | |
+| `app-check-debug-token`（devのみ） | ローカル/CI用 | 本番では使わない |
+
+---
+
+## 5. Cloud Tasks
+
+| パラメータ | 備考 |
 |---|---|
-| Cloud Run service | `{project-prefix}-api-{env}` |
-| Service Account | `{component}-sa`（環境はプロジェクト分離しないため付与しない。§3参照） |
-| Secret Manager secret | `{component}-{secret-name}`（例: `api-shared-password`） |
-| Firestore collection | 複数形・snake_case（例: `sessions`, `utterances`, `grammar_feedbacks`） |
-| Cloud Armor security policy | `{project-prefix}-armor-{env}` |
-| Workload Identity Pool | `{project-prefix}-github-pool` |
+| `TASKS_QUEUE_NAME` | 例: `topic-pack-generation` |
+| `TASKS_QUEUE_LOCATION` | `GCP_REGION`と揃える |
+| `TASKS_MAX_CONCURRENT_DISPATCHES` | X API/Geminiのレート制限に合わせて設定 |
+| `TASKS_MAX_DISPATCHES_PER_SECOND` | 同上 |
+| `TASKS_DISPATCH_DEADLINE_SECONDS` | 最大`1800`（30分上限） |
+| `TASKS_INVOKER_SERVICE_ACCOUNT` | `cloud-tasks-invoker-sa` |
 
 ---
 
-## 3. GCPプロジェクト
+## 6. Agent Engine（ADK）
 
-| 環境 | GCPプロジェクトID | 状態 |
-|---|---|---|
-| dev | `TBD` | 未確定 |
-| prd | `TBD` | 未確定 |
-| stg | （未使用。導入時に確定） | 未着手 |
-
-`01_ARCHITECTURE.md` TBD-INF-010の結論に基づき、**dev/prdは単一プロジェクト＋リソース名サフィックスで開始**する方針。つまり上記2行は同一プロジェクトID（`TBD`）になる想定。プロジェクト分離が必要になった場合はここを更新する。
-
----
-
-## 4. リージョン
-
-| 用途 | リージョン | 状態 |
-|---|---|---|
-| Cloud Run（API） | `TBD`（例: `asia-northeast1`想定だが、Agent Engine/Live APIの対応リージョンに合わせて再確認要） | 未確定 |
-| Vertex AI Agent Engine / Gemini Live API | `TBD` | 未確定（TBD-INF-011、要調査） |
-| Firestore | Cloud Run/Agent Engineと同一リージョンに揃える | 未確定 |
-
-**音声のレイテンシに直結するため、Agent Engine + Live API bidi streamingが利用可能なリージョンを先に確定し、他リソースをそれに合わせる順序で決定する。**
-
----
-
-## 5. Cloud Runサービス
-
-| 環境 | サービス名 | ingress |
-|---|---|---|
-| dev | `{project-prefix}-api-dev` | 標準（public） |
-| prd | `{project-prefix}-api-prd` | `internal-and-cloud-load-balancing` |
-
-Frontendは Firebase Hosting（静的ホスティング）のため、Cloud Runサービスとしては存在しない。
-
----
-
-## 6. Vertex AI Agent Engine
-
-| 環境 | Reasoning Engine 表示名（案） | 状態 |
-|---|---|---|
-| dev | `{project-prefix}-agent-dev` | 未作成 |
-| prd | `{project-prefix}-agent-prd` | 未作成 |
-
-デプロイ経路（GCSステージングバケット名等）は`04_DEPLOY.md`で定義する。
-
----
-
-## 7. Service Account
-
-`01_ARCHITECTURE.md` §11と対応。
-
-| Service Account ID（案） | 用途 |
+| パラメータ | 備考 |
 |---|---|
-| `api-sa` | Cloud Run API実行ID |
-| `agent-engine-sa` | Vertex AI Agent Engine実行ID |
-| `github-actions-deploy-sa` | GitHub Actions deploy用 |
-| `terraform-sa` | Terraform実行用 |
-| `monitoring-sa` | 監視・通知連携用（必要になれば） |
-
-権限（ロールバインディング）の詳細は`03_SECURITY.md`で定義する。
+| `AGENT_ENGINE_DISPLAY_NAME` | 環境ごとに命名（例: `real-conv-agent-dev`） |
+| `AGENT_ENGINE_MIN_INSTANCES` / `MAX_INSTANCES` | `agent_engines.update()`のスケーリング設定 |
+| `AGENT_ENGINE_SERVICE_ACCOUNT` | Firestore/Gemini/X APIへのアクセス権限を持つ専用SA |
+| `LIVE_API_MODEL_NAME` | 使用するGeminiモデル名（Live対応モデル） |
+| `PERSONA_VOICE_MAP` | Persona ID → voice_name の対応 |
+| `SESSION_RESUMPTION_ENABLED` | `true`固定 |
+| `BIDI_STREAM_TIMEOUT_SECONDS` | プラットフォーム既定は約600秒 |
+| `TOPIC_PACK_GENERATION_TIMEOUT_SECONDS` | Cloud Tasksのdispatch_deadlineと整合 |
+| `REVIEW_GENERATION_TIMEOUT_SECONDS` | 同期呼び出しのタイムアウト |
+| `GOOGLE_SEARCH_GROUNDING_ENABLED` / `URL_CONTEXT_ENABLED` | Topic Pack Workflow用フラグ |
 
 ---
 
-## 8. Firestore
+## 7. Firestore
 
-| 項目 | 値 |
+| パラメータ | 備考 |
 |---|---|
-| モード | Native mode |
-| データベースID | `(default)`を利用するか専用DBを作るかTBD |
-| TTLフィールド名 | `expires_at`（統一） |
-
-コレクション名・フィールド定義の詳細は`docs/backend/03_DATA_DESIGN.md`（別途執筆）で定義する。
+| `FIRESTORE_DATABASE_ID`（dev/prd別） | マルチデータベースで分離 |
+| `FIRESTORE_TTL_HOURS` | `24`（session/review/topic_pack/display_events共通） |
+| コレクション名 | `sessions` / `session_messages` / `reviews` / `topic_packs` / `display_events` / `jobs`（アプリ定数） |
 
 ---
 
-## 9. Secret Manager
+## 8. App Check
 
-| Secret名（案） | 内容 | 参照元 |
+| パラメータ | 備考 |
+|---|---|
+| `RECAPTCHA_ENTERPRISE_SITE_KEY`（dev/prd別） | Hosting siteドメインごとに発行 |
+| `APP_CHECK_TOKEN_TTL` | 既定値のまま |
+| `APP_CHECK_DEBUG_TOKEN_FROM_CI` | GitHub Actions secretsに保存 |
+
+---
+
+## 9. IAM / Service Account
+
+| SA名 | 用途 |
+|---|---|
+| `api-sa` | Cloud Run API実行、Firestore/Secret Manager/Cloud Tasks/Agent Engine呼び出し |
+| `agent-engine-sa` | Agent Engine実行、Firestore/Gemini/X API呼び出し |
+| `cloud-tasks-invoker-sa` | Cloud TasksからAPI内部エンドポイントを呼ぶ専用 |
+| `github-actions-deploy-sa` | frontend/api/agent/terraformのデプロイ用 |
+| `terraform-sa` | Terraform実行用（bootstrap含む） |
+
+---
+
+## 10. Workload Identity Federation / Artifact Registry
+
+| パラメータ | 備考 |
+|---|---|
+| `WIF_POOL_ID` / `WIF_PROVIDER_ID` | bootstrap時に作成 |
+| `WIF_ATTRIBUTE_CONDITION` | 対象リポジトリに限定するcondition |
+| `ARTIFACT_REGISTRY_REPO_NAME` / `ARTIFACT_REGISTRY_LOCATION` | コンテナイメージ格納先 |
+| `IMAGE_TAG` | git SHAベース |
+
+---
+
+## 11. コスト管理・監視
+
+| パラメータ | 備考 |
+|---|---|
+| `BILLING_BUDGET_AMOUNT` | 日次または月次上限額 |
+| `BILLING_ALERT_THRESHOLDS` | 例: 50% / 80% / 100% |
+| `MONITORING_NOTIFICATION_CHANNEL` | 通知先（メール等） |
+| `LOG_RETENTION_DAYS` | Cloud Loggingの保持期間 |
+
+---
+
+## 12. Terraform変数
+
+`environments/{dev,prod}/terraform.tfvars`に、インフラリソースの形を決める値（`project_id`, `region`, `environment`, Cloud Run scaling系, Firestoreデータベース設定, Cloud Tasksキュー設定, Secret Managerのシークレット名一覧, 予算アラート設定等）を集約する。アプリロジックに関わる値（`SESSION_MAX_DURATION_SECONDS`等）はTerraformからCloud Runの環境変数として注入する。
+
+---
+
+## 13. GitHub Actions Variables/Secrets
+
+| 名前 | 種別 | 備考 |
 |---|---|---|
-| `api-shared-password` | password認証用の共有パスワード | `api-sa` |
-| `api-session-signing-key` | session token（JWT等）署名鍵 | `api-sa` |
-| `gemini-api-key` または Vertex AI関連設定 | Gemini / Vertex AI認証情報 | `api-sa`, `agent-engine-sa` |
-| `x-api-token` | X APIトークン | `agent-engine-sa` |
-
----
-
-## 10. 環境変数
-
-`.env.example`（リポジトリroot）との整合を取る。値は入れず、キー名のみここでも一覧化する。
-
-| 変数名 | 用途 | 対象 |
-|---|---|---|
-| `GCP_PROJECT_ID` | GCPプロジェクトID | API, Agent Engine |
-| `GCP_REGION` | リージョン | API, Agent Engine |
-| `ENVIRONMENT` | `dev` / `prd` / `stg` | API |
-| `FIRESTORE_DATABASE_ID` | Firestoreデータベース識別子 | API |
-| `AGENT_ENGINE_RESOURCE_NAME` | 呼び出し先Agent EngineのリソースID | API |
-| `CORS_ALLOWED_ORIGINS` | 許可するFrontend origin（devは`http://localhost:*`を含む） | API |
-
----
-
-## 11. Terraform variables
-
-`infra/terraform/environments/{env}/terraform.tfvars`で定義する主要変数（値は環境ごとに異なる）。
-
-| 変数名 | 内容 |
-|---|---|
-| `project_id` | GCPプロジェクトID |
-| `region` | リージョン |
-| `environment` | `dev` / `prd` |
-| `enable_load_balancer` | prdのみ`true`（ALB/Cloud Armor/Serverless NEGを作成するかのスイッチ） |
-| `api_service_name` | Cloud Runサービス名 |
-| `agent_engine_display_name` | Agent Engine表示名 |
-
-`enable_load_balancer`のようなフラグで、dev/prdの構成差分（ALB有無）をモジュール共通化しつつ切り替えられるようにする。
-
----
-
-## 12. 未決定事項
-
-| TBD ID | 内容 |
-|---|---|
-| TBD-PARAM-001 | GCPプロジェクトIDの確定（新規作成か、既存プロジェクトを利用するか） |
-| TBD-PARAM-002 | リージョンの確定（Agent Engine / Live API対応状況の調査が前提、`01_ARCHITECTURE.md` TBD-INF-011） |
-| TBD-PARAM-003 | `project-prefix`の確定（現在`real-conv`は仮称） |
-| TBD-PARAM-004 | Firestoreデータベースを`(default)`にするか専用IDにするか |
-| TBD-PARAM-005 | 既存ドキュメント内の`prod`表記を`prd`に統一するかどうか（表記揺れの解消） |
-
----
-
-## 13. 参考資料
-
-- `docs/infra/01_ARCHITECTURE.md`
-- `.env.example`（リポジトリroot）
+| `GCP_PROJECT_ID` | Variable | |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Variable | WIFのフルリソースパス |
+| `GCP_SERVICE_ACCOUNT_EMAIL`(環境別) | Variable | GitHub Environmentごとに分離 |
+| `APP_CHECK_DEBUG_TOKEN_FROM_CI` | Secret | mock E2EやCIでのApp Check通過用 |
+| `FIREBASE_PROJECT_ID` | Variable | |

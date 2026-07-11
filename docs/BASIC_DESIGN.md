@@ -113,7 +113,7 @@ real_conversation_agents/
 │   └── infra/             # インフラ領域の詳細設計文書置き場
 ├── frontend/               # 未作成。今後の実装で追加する
 ├── api/                    # 未作成。今後の実装で追加する
-├── worker/                 # 未作成。今後の実装で追加する
+├── agent/                  # 未作成。今後の実装で追加する
 ├── packages/               # 未作成。今後の実装で追加する
 ├── infra/                  # 未作成（root直下）。今後の実装で追加する
 └── .github/                # 未作成。今後の実装で追加する
@@ -123,15 +123,15 @@ real_conversation_agents/
 | ---------------- | ------------------------------------------------------------------------------------ | --- |
 | `docs/`          | 要件定義書、基本設計書、開発規則、DevOpsメモ、図表を管理する。`asset/`に図表、`frontend/` `backend/` `infra/`に領域別の詳細設計書を今後追加していく。 | 既存  |
 | `frontend/`      | Web UI、画面遷移、音声入力UI、吹き出し表示、復習画面を管理する。                                                   | 未作成 |
-| `api/`           | ユーザー操作を受けるAPI、リアルタイム会話制御、Gemini Live API連携、セッション管理を担当する。                               | 未作成 |
-| `worker/` | ～廃止～ Worker / Cloud Tasksは採用しないため、このディレクトリは作らない（`docs/infra/01_ARCHITECTURE.md` §8）。会話後フィードバック・要約はAPIからVertex AI Agent Engineへの同期呼び出しで行う。 | 廃止 |
-| `packages/`      | frontend / api / workerで共有する型定義、定数、スキーマ等を管理する。MVPでは未使用でもよい。                            | 未作成 |
-| `infra/`（root直下） | Terraform等のIaC、GCPリソース定義、デプロイ補助スクリプトを管理する。                                             | 未作成 |
-| `.github/`       | GitHub Actions等のCI/CD設定を管理する。                                                        | 未作成 |
+| `api/`           | ユーザー操作を受けるAPI、リアルタイム会話制御、Gemini Live APIとの中継、セッション管理、Cloud Tasksハンドラ（`api/src/tasks/`）を担当する。 | 未作成 |
+| `agent/` | ADKで実装するAgent本体（Conversation Director / Persona Agents / Topic Pack Workflow / Scoring Observer / Hint Generator / Review Agent）を管理する。Vertex AI Agent Engineへ独立してデプロイする（`docs/infra/01_ARCHITECTURE.md` §2）。 | 未作成 |
+| `packages/`      | frontend / api / agentで共有するJSON Schema等を管理する（`packages/shared-schemas/`）。MVPでは未使用でもよい。 | 未作成 |
+| `infra/`（root直下） | Terraform等のIaC、GCPリソース定義を管理する。`bootstrap/`（人力実行専用）と`terraform/environments/`（CI管理）に分かれる。 | 未作成 |
+| `.github/`       | GitHub Actions等のCI/CD設定、Issue/PRテンプレートを管理する。                                          | 未作成 |
 
-`app/BE` のような曖昧なディレクトリは設けず、バックエンド系の責務は `api/` と `worker/` に分離する。ミドルウェアは `api/src/middleware/` に配置する想定とする。
+`app/BE` のような曖昧なディレクトリは設けず、バックエンド系の責務は `api/` と `agent/` に分離する。ミドルウェアは `api/src/middleware/` に配置する想定とする。常設のWorker Cloud Runサービスは設けず、Cloud Tasksのターゲットは`api/src/tasks/`に統合する。
 
-なお、`docs/infra/` はインフラ領域の詳細設計文書を置く場所であり、root直下の `infra/`（Terraform等のIaCコード）とは役割が異なる。同様に `docs/frontend/` `docs/backend/` もそれぞれの領域の詳細設計文書置き場であり、実装コードを置く `frontend/` `api/` `worker/` とは別物である。
+なお、`docs/infra/` はインフラ領域の詳細設計文書を置く場所であり、root直下の `infra/`（Terraform等のIaCコード）とは役割が異なる。同様に `docs/frontend/` `docs/backend/` もそれぞれの領域の詳細設計文書置き場であり、実装コードを置く `frontend/` `api/` `agent/` とは別物である。
 
 ---
 
@@ -242,15 +242,15 @@ Worker / Cloud Tasksは採用しない（11章）。ADKで実装したAgentは�
 | 主な責務 | 会話進行、話者制御、文法フィードバック生成、会話要約、トピック生成、Gemini Live APIとの双方向ストリーミング保持 |
 | 想定技術 | ADK、Vertex AI Agent Engine |
 | 主なI/O | APIからの中継リクエスト、Gemini Live API、X API（Topic Agent tool）、`VertexAiSessionService`によるセッション永続化 |
-| 設計上の注意 | セッション状態の情報源（SoT）はAgent Engine Sessions側とする。詳細は`docs/infra/01_ARCHITECTURE.md` §12、`docs/backend/02_AGENT_DESIGN.md`（別途執筆）。 |
+| 設計上の注意 | セッション状態の情報源（SoT）はAgent Engine Sessions側とする。詳細は`docs/infra/01_ARCHITECTURE.md` §3.3・§6.1、`docs/backend/03_AGENT_ORCHESTRATION_DRAFT.md`。 |
 
 ### 6.4 DB
 
 | 項目 | 内容 |
 |---|---|
 | 主な責務 | セッション、発話、AI応答、フィードバックの保存（復習画面・ログ用） |
-| 採用技術 | Firestore（Native mode） |
-| 設計上の注意 | TTLポリシーでセッションクリーンアップを自動化する。詳細は`docs/infra/01_ARCHITECTURE.md` §9、`docs/backend/03_DATA_DESIGN.md`（別途執筆）。 |
+| 採用技術 | Firestore（Native mode。マルチデータベース機能でdev/prdを分離） |
+| 設計上の注意 | TTLポリシーでセッションクリーンアップを自動化する。詳細は`docs/infra/01_ARCHITECTURE.md` §3.4・§6、`docs/backend/02_BACKEND_PROCESS_DRAFT.md`。 |
 
 ### 6.5 Infra
 
@@ -258,8 +258,8 @@ Worker / Cloud Tasksは採用しない（11章）。ADKで実装したAgentは�
 |---|---|
 | 主な責務 | GCPリソースをIaCで管理する |
 | 候補 | Terraform |
-| 管理対象 | Cloud Run、Vertex AI Agent Engine、Firestore、Secret Manager、Artifact Registry、IAM、Organization Policy等 |
-| 設計上の注意 | dev / prdをまず分離し、stgは将来追加する。詳細は`docs/infra/01_ARCHITECTURE.md` §18、`docs/infra/02_PARAMS_DEF.md`。 |
+| 管理対象 | Cloud Run、Vertex AI Agent Engine実行用IAM、Firestore、Secret Manager、Artifact Registry、IAM等 |
+| 設計上の注意 | dev / prdは単一プロジェクト内でFirestoreマルチデータベース等を用いて分離し、stgは将来追加する。詳細は`docs/infra/04_DEPLOY.md`、`docs/infra/02_PARAMS_DEF.md`。 |
 
 ---
 
@@ -402,30 +402,32 @@ APIキー、認証情報、環境別設定はSecret Managerで管理する。fro
 
 ---
 
-## 11. 非同期処理方針（Worker / Cloud Tasksは採用しない）
+## 11. 非同期処理方針（常設Workerサービスは採用しない）
 
-Cloud Run Worker + Cloud Tasksによるjobキュー方式は不採用とした。Agentの実行基盤をVertex AI Agent Engineに寄せたことで、以下の形で代替する（詳細は`docs/infra/01_ARCHITECTURE.md` §8）。
+Cloud Run Worker常設サービス + Cloud Tasksによるjobキュー方式のうち、**常設Workerサービスは不採用**とした。一方で、X API呼び出し・Topic Pack生成はCloud Run API内の内部エンドポイントをCloud Tasksがターゲットする形で非同期化する（詳細は`docs/infra/01_ARCHITECTURE.md` §5、`docs/infra/04_DEPLOY.md` §1）。
 
 | 旧job | 代替方式 |
 |---|---|
 | feedback_generation | 会話終了APIでAgent Engineを**同期呼び出し**（クライアントは数秒待つ） |
 | conversation_summary | 同上 |
-| trend_topic_fetch | Topic AgentのADK tool（Agent Engine内で完結、失敗時fallbackもtool内） |
+| trend_topic_fetch / topic_pack_generation | Cloud Tasksがキューイングし、Cloud Run API内の内部エンドポイント（`api/src/tasks/`）が処理。フロントは`job_id`を受け取りポーリングする |
 | session_cleanup | **Firestore TTLポリシー**で自動削除（Cloud Functions/cron不要） |
 
 ```mermaid
 flowchart LR
-    API[API] -->|同期呼び出し| AE[Vertex AI Agent Engine]
+    API[API] -->|会話終了時: 同期呼び出し| AE[Vertex AI Agent Engine]
     AE --> Gemini[Gemini API]
-    AE --> XAPI[X API]
+    API -->|Topic Pack生成: enqueue| CT[(Cloud Tasks)]
+    CT -->|dispatch| API
+    API --> XAPI[X API]
     API --> DB[(Firestore)]
 ```
 
 | ID | 方針 |
 |---|---|
 | JOB-001 | リアルタイム会話本体はqueueに入れない（従来通り）。 |
-| JOB-002 | 会話後フィードバック等はAgent Engineへの同期呼び出しで完結させる（Cloud Tasksは使わない）。 |
-| JOB-003 | Cloud Tasksのretry保証が無くなるため、Gemini / Agent Engine呼び出しのretry/backoffはアプリコード側で明示的に実装する。 |
+| JOB-002 | 会話後フィードバック等はAgent Engineへの同期呼び出しで完結させる。Cloud Tasksを使うのはX API/Topic Pack生成のみとし、常設Workerサービスは設けない。 |
+| JOB-003 | Cloud Tasksのretryに加え、Gemini / Agent Engine呼び出しのretry/backoffはアプリコード側でも明示的に実装する。 |
 | JOB-004 | 同時実行数バックプレッシャー（閾値超過時は429 + Retry-Afterを返す）で過負荷を防ぐ。「確実な実行」の保証ではなく過負荷保護である点に注意。 |
 
 ---
@@ -763,19 +765,19 @@ erDiagram
 | ~~TBD-002~~ | FastAPI（Python）に確定 |
 | ~~TBD-004~~ | ADKで実装し、Vertex AI Agent Engineにデプロイする方式に確定 |
 | ~~TBD-005~~ | Firestoreに確定 |
-| ~~TBD-008~~ | Worker/Cloud Tasksは採用しないことに確定 |
+| ~~TBD-008~~ | 常設Workerサービスは採用しないことに確定。ただしX API/Topic Pack生成はCloud Run API内の内部エンドポイントをCloud Tasksがターゲットする形で非同期化する（`docs/infra/01_ARCHITECTURE.md` §5） |
 | ~~TBD-010~~ | dev/prdから開始し、必要になった時点でstgを追加する方針に確定 |
+| ~~TBD-003~~ | Gemini Live APIはCloud Run APIが`runner.run_live()`を保持しAgent Engineと直結する構成に確定。フロントエンドからの直接接続は行わない。`session_resumption`必須実装（`docs/infra/01_ARCHITECTURE.md` §3.3・§4・§7） |
+| ~~TBD-009~~ | 会話ログの保存期間はセッション終了後24時間のFirestore TTLに確定（`docs/infra/02_PARAMS_DEF.md` §7） |
 
 ### 23.2 未決定事項
 
 | TBD ID | 未決定事項 | 判断観点 |
 |---|---|---|
-| TBD-003 | Gemini Live APIをAgent Engine経由で接続する構成の詳細 | secret保護、ログ、レイテンシ（`docs/infra/01_ARCHITECTURE.md` §12） |
 | TBD-006 | X API連携をMVPに含めるか | API制限、実装負荷、審査加点 |
 | TBD-007 | barge-inをMVPでどこまで実装するか | 体験価値、実装難度 |
-| TBD-009 | 会話ログの保存期間 | プライバシー、デバッグ、復習（Firestore TTLの具体的な日数、`docs/infra/01_ARCHITECTURE.md` §9.6） |
 
-インフラ関連の残りのTBDは`docs/infra/01_ARCHITECTURE.md` §22、`02_PARAMS_DEF.md` §12、`03_SECURITY.md` §9、`04_DEPLOY.md` §11に集約されている。
+インフラ関連の残りのTBDは`docs/infra/00_OVERVIEW.md` §7、`01_ARCHITECTURE.md` §8、`02_PARAMS_DEF.md`各章、`03_SECURITY.md` §10、`04_DEPLOY.md` §8に集約されている。
 
 ---
 
