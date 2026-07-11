@@ -1,0 +1,108 @@
+terraform {
+  required_version = ">= 1.10"
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
+module "iam" {
+  source      = "../../modules/iam"
+  project_id  = var.project_id
+  environment = var.environment
+}
+
+module "agent_engine_iam" {
+  source                = "../../modules/agent-engine-iam"
+  project_id            = var.project_id
+  project_number        = data.google_project.this.number
+  agent_engine_sa_email = module.iam.agent_engine_sa_email
+}
+
+module "artifact_registry" {
+  source        = "../../modules/artifact-registry"
+  project_id    = var.project_id
+  location      = var.region
+  repository_id = "real-conv-agents-${var.environment}"
+}
+
+module "firestore" {
+  source                   = "../../modules/firestore"
+  project_id               = var.project_id
+  database_id              = var.firestore_database_id
+  location_id              = var.region
+  delete_protection_state  = "DELETE_PROTECTION_ENABLED"
+}
+
+module "secret_manager" {
+  source     = "../../modules/secret-manager"
+  project_id = var.project_id
+  secret_ids = var.secret_ids
+  accessor_service_accounts = [
+    module.iam.api_sa_email,
+    module.iam.agent_engine_sa_email,
+  ]
+}
+
+module "cloud_tasks" {
+  source                     = "../../modules/cloud-tasks"
+  project_id                 = var.project_id
+  location                   = var.region
+  queue_name                 = "topic-pack-generation-${var.environment}"
+  max_concurrent_dispatches  = var.tasks_max_concurrent_dispatches
+  max_dispatches_per_second  = var.tasks_max_dispatches_per_second
+}
+
+module "cloud_run_api" {
+  source                = "../../modules/cloud-run"
+  project_id            = var.project_id
+  region                = var.region
+  service_name          = "real-conv-api-${var.environment}"
+  service_account_email = module.iam.api_sa_email
+  min_instance_count    = var.cloud_run_min_instances
+  max_instance_count    = var.cloud_run_max_instances
+  concurrency           = var.cloud_run_concurrency
+  timeout_seconds       = var.cloud_run_timeout_seconds
+  allow_unauthenticated = var.cloud_run_allow_unauthenticated
+
+  env_vars = {
+    GCP_PROJECT_ID        = var.project_id
+    GCP_REGION            = var.region
+    ENVIRONMENT           = var.environment
+    FIRESTORE_DATABASE_ID = var.firestore_database_id
+  }
+}
+
+# Cloud TasksがこのCloud Run APIサービス内の内部エンドポイントを呼べるようにする
+resource "google_cloud_run_v2_service_iam_member" "tasks_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = module.cloud_run_api.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.cloud_tasks_invoker_sa_email}"
+}
+
+# bootstrap作成の共有github-actions-deploy-saが、prod環境のapi-sa/agent-engine-saを
+# actAsしてデプロイできるようにする。
+resource "google_service_account_iam_member" "gha_act_as_api" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${module.iam.api_sa_email}"
+  role                = "roles/iam.serviceAccountUser"
+  member              = "serviceAccount:${var.github_actions_deploy_sa_email}"
+}
+
+resource "google_service_account_iam_member" "gha_act_as_agent_engine" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${module.iam.agent_engine_sa_email}"
+  role                = "roles/iam.serviceAccountUser"
+  member              = "serviceAccount:${var.github_actions_deploy_sa_email}"
+}

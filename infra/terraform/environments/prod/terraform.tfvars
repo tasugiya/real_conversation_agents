@@ -1,0 +1,18 @@
+# 実際のプロジェクトIDに合わせて確認・更新すること。
+project_id  = "real-conversation-agents"
+region      = "us-central1"
+environment = "prod"
+
+firestore_database_id = "(default)"
+
+cloud_run_min_instances        = 1
+cloud_run_max_instances        = 4
+cloud_run_concurrency          = 20
+cloud_run_timeout_seconds      = 3600
+cloud_run_allow_unauthenticated = true
+
+tasks_max_concurrent_dispatches = 5
+tasks_max_dispatches_per_second = 2
+
+# infra/bootstrap/実行後、出力されたgithub-actions-deploy-saのメールアドレスに置き換える
+github_actions_deploy_sa_email = "REPLACE_WITH_BOOTSTRAP_OUTPUT"
