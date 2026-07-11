@@ -60,6 +60,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # terraform.tfvarsはローカル専用でcommitしない（.gitignoreで除外済み）。
+      # CIはTF_VAR_*環境変数で同じ変数に値を渡す（docs/infra/02_PARAMS_DEF.md §13）。
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_github_actions_deploy_sa_email: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
 

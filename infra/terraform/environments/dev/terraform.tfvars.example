@@ -1,3 +1,5 @@
+# このファイルは `terraform.tfvars` としてコピーして使う（コピー後のファイルはcommitしない）。
+#   cp terraform.tfvars.example terraform.tfvars
 # 実際のプロジェクトIDに合わせて確認・更新すること。
 # ローカルのgcloud設定では "real-conversation-agents" が既定projectになっていたが、
 # 本当にこのプロジェクトを使ってよいか着手前に確認する。

@@ -1,3 +1,5 @@
+# このファイルは `terraform.tfvars` としてコピーして使う（コピー後のファイルはcommitしない）。
+#   cp terraform.tfvars.example terraform.tfvars
 # 実際のプロジェクトIDに合わせて確認・更新すること。
 project_id  = "real-conversation-agents"
 region      = "us-central1"

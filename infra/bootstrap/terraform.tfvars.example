@@ -1,3 +1,5 @@
+# このファイルは `terraform.tfvars` としてコピーして使う（コピー後のファイルはcommitしない）。
+#   cp terraform.tfvars.example terraform.tfvars
 # 実行前に必ず値を確認・修正すること。
 
 project_id = "real-conversation-agents" # 要確認: このプロジェクトを使ってよいか着手前に確認する

@@ -10,15 +10,19 @@ Terraformがstateを保存するGCSバケット自体を、そのバックエン
 
 ## 実行前に確認すること
 
-1. `terraform.tfvars`の`project_id`が本当に使ってよいプロジェクトか
-2. `state_bucket_name`がグローバルに一意な名前か（GCSバケット名は全世界で一意である必要がある）
-3. `github_repository`が実際のリポジトリと一致しているか
-4. 実行するGoogleアカウントが対象プロジェクトのOwner/Editor相当の権限を持っているか
+1. `terraform.tfvars.example`を`terraform.tfvars`としてコピーする（`terraform.tfvars`自体はcommitしない。`.gitignore`で除外済み）
+2. コピーした`terraform.tfvars`の`project_id`が本当に使ってよいプロジェクトか
+3. `state_bucket_name`がグローバルに一意な名前か（GCSバケット名は全世界で一意である必要がある）
+4. `github_repository`が実際のリポジトリと一致しているか
+5. 実行するGoogleアカウントが対象プロジェクトのOwner/Editor相当の権限を持っているか
 
 ## 実行手順
 
 ```bash
 cd infra/bootstrap
+
+# 0. tfvarsをコピーして実際の値を埋める
+cp terraform.tfvars.example terraform.tfvars
 
 # 1. 初回はローカルstateで実行する
 terraform init
@@ -45,9 +49,9 @@ rm backend_migrate.tf   # migrate後は不要（設定はbackend.tf相当とし�
 
 ## 実行後にやること
 
-1. `terraform output`の値を、以下に反映する。
+1. `terraform output`の値を、以下に反映する（各環境ディレクトリでも`terraform.tfvars.example`を`terraform.tfvars`としてコピーした上で編集する）。
    - `infra/terraform/environments/dev/backend.tf`・`infra/terraform/environments/prod/backend.tf`の`bucket`
    - `infra/terraform/environments/dev/terraform.tfvars`・`infra/terraform/environments/prod/terraform.tfvars`の`github_actions_deploy_sa_email`
-   - GitHub repositoryの Settings > Secrets and variables > Actions に、`GCP_WORKLOAD_IDENTITY_PROVIDER`・`GCP_SERVICE_ACCOUNT_EMAIL`（terraform-sa用）・`GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL`（github-actions-deploy-sa用）などの値を登録する（`docs/infra/02_PARAMS_DEF.md` §13）
-2. GitHub repositoryの Settings > Environments で`dev`・`prd`を作成し、`prd`にrequired reviewersを設定する
+   - GitHub repositoryの Settings > Secrets and variables > Actions に、`GCP_WORKLOAD_IDENTITY_PROVIDER`・`GCP_TERRAFORM_SERVICE_ACCOUNT_EMAIL`（terraform-sa用）・`GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL`（github-actions-deploy-sa用）などの値を登録する（`docs/infra/02_PARAMS_DEF.md` §13）
+2. GitHub repositoryの Settings > Environments で`dev`・`prod`を作成し、`prod`にrequired reviewersを設定する（GitHub Environmentの`required reviewers`はセルフ承認をブロックしないため、変更者自身がreviewerに入っていれば自己承認できる）
 3. これ以降、`infra/terraform/environments/{dev,prod}`はCI（`.github/workflows/cd.yml`）が自動でplan/applyする
