@@ -90,15 +90,17 @@ sequenceDiagram
 
 ## 3. dev環境のアクセス制御
 
-dev環境は開発者がブラウザで実際のUIとして利用できる必要があるため、以下の3層を重ねる。
+当初はCloud Run IAM認証＋IAP for Cloud Run＋passwordの3層構成を検討したが、実装時にIAPはOAuth consent screen（brand）の初回設定がOrganization無しのプロジェクトではConsole手動操作必須という制約が判明し、ハッカソンの時間対効果を踏まえて**見送った**（`infra/terraform/modules/cloud-run`には`iap_enabled`トグルを無効状態のまま残してあり、後日再検討は可能）。
+
+そのため、**dev環境もprd環境と同じApp Check＋password＋rate limitの2層で防御する**（`cloud_run_allow_unauthenticated = true`）。
 
 | 層 | 手段 | 防ぐ脅威 |
 |---|---|---|
-| プラットフォーム層 | Cloud Run `authentication required` + `roles/run.invoker`をdev環境の開発者アカウント/グループに付与 | GCPレベルでの未認可アクセス |
-| ブラウザ層 | IAP for Cloud Run（ALBを介さない直接統合） | ブラウザ経由のログイン制御。IAPがOAuthハンドシェイクを仲介し、ブラウザにIDトークンを持たせる必要がある問題を解消する |
-| アプリ層 | FastAPIのpassword認証（§2.1） | アプリレベルのゲート。IAM/IAPを突破されても最終防衛線として機能する |
+| App Check | reCAPTCHA Enterprise（devはdebugプロバイダ許容） | 正規フロントエンド以外からのアクセス |
+| アプリ層 | FastAPIのpassword認証（§2.1） | アプリレベルのゲート |
+| rate limit | §7参照 | 過負荷・コスト濫用 |
 
-3層とも省略せず実装する（ユーザー確定事項）。prd環境はIAM層・IAP層を持たず、App Check＋password＋rate limitで防御する（一般公開のデモ環境のため）。
+dev/prdの実質的な違いは、`APP_CHECK_ENFORCEMENT_MODE`（dev: monitor、prd: enforce）とpasswordの値のみになる。特定のGoogleアカウントだけにdevアクセスを絞る要件が今後出てきた場合は、IAP for Cloud Runの導入を再検討する。
 
 ---
 

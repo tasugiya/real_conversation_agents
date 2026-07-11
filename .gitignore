@@ -4,6 +4,46 @@
 _internal/
 
 # =======
+# firebase
+# =======
+
+# Firebase build and deployment files
+/firebase-debug.log
+/firebase-debug.*.log
+.firebaserc
+
+# Firebase Hosting
+/firebase.json
+
+# .firebaserc / firebase.json ARE committed here on purpose: CI/CD
+# (.github/workflows/cd.yml deploy-frontend) needs them present in the
+# checked-out repo to know the dev/prod Hosting site targets.
+!.firebaserc
+!/firebase.json
+*.cache
+hosting/.cache
+
+# Firebase Functions
+/functions/node_modules/
+/functions/.env
+/functions/package-lock.json
+
+# Firebase Emulators
+/firebase-*.zip
+/.firebase/
+/emulator-ui/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (local configs)
+/.env.*
+
+
+# =======
 # Node
 # =======
 

@@ -62,6 +62,6 @@ variable "ingress" {
 
 variable "allow_unauthenticated" {
   type        = bool
-  description = "trueの場合allUsersにroles/run.invokerを付与する（prd想定）。devではfalseにしIAM認証を要求する"
+  description = "trueの場合allUsersにroles/run.invokerを付与する。dev/prdともにtrueとし、App Check＋password＋rate limitで防御する（docs/infra/03_SECURITY.md §3）"
   default     = false
 }

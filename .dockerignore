@@ -1,0 +1,32 @@
+# Repo-root .dockerignore. Build contexts (e.g. `docker build -f api/Dockerfile .`)
+# use the repo root, so this applies across frontend/api/agent builds.
+
+.git/
+.github/
+docs/
+infra/
+_internal/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+
+**/node_modules/
+**/dist/
+**/.vite/
+
+**/.env
+**/.env.*
+!**/.env.example
+
+*.md
+.dockerignore
+Dockerfile

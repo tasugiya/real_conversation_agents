@@ -23,12 +23,12 @@ variable "firestore_database_id" {
 
 variable "secret_ids" {
   type        = list(string)
-  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）"
+  description = "作成するSecret Manager上のシークレット名一覧（docs/infra/02_PARAMS_DEF.md §4）。単一プロジェクト内でdev/prodが同じシークレット名を取り合わないよう環境サフィックスを付ける"
   default = [
-    "shared-auth-username",
-    "shared-auth-password-hash",
-    "token-signing-secret",
-    "x-api-bearer-token",
+    "shared-auth-username-prod",
+    "shared-auth-password-hash-prod",
+    "token-signing-secret-prod",
+    "x-api-bearer-token-prod",
   ]
 }
 
@@ -72,4 +72,43 @@ variable "cloud_run_allow_unauthenticated" {
 variable "github_actions_deploy_sa_email" {
   type        = string
   description = "infra/bootstrap/で作成した共有github-actions-deploy-saのメールアドレス（bootstrap実行後に値を埋める）"
+}
+
+variable "agent_engine_resource_name" {
+  type        = string
+  description = "agent/deploy.py（create）実行後に確定するAgent Engineのresource_name。以降はupdateで同じ値を使い続ける"
+  default     = ""
+}
+
+variable "firebase_project_id" {
+  type        = string
+  description = "App Checkトークン検証に使うFirebaseプロジェクトID（通常はproject_idと同じ）"
+  default     = ""
+}
+
+variable "cors_allowed_origins" {
+  type        = string
+  description = "許可するfrontendオリジン（Firebase HostingのURL、カンマ区切り。.web.app/.firebaseapp.comの両方を許可する）"
+  default     = "https://real-conversation-agents.web.app,https://real-conversation-agents.firebaseapp.com"
+}
+
+variable "app_check_enforcement_mode" {
+  type    = string
+  default = "enforce"
+}
+
+variable "auth_token_ttl_seconds" {
+  type    = number
+  default = 3600
+}
+
+variable "stream_ticket_ttl_seconds" {
+  type    = number
+  default = 60
+}
+
+variable "rate_limit_per_ip_per_minute" {
+  type        = number
+  description = "Cloud Run 1インスタンスあたりの上限（docs/infra/03_SECURITY.md §7）"
+  default     = 10
 }

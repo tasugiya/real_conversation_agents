@@ -7,13 +7,13 @@ project_id = "real-conversation-agents"
 region     = "us-central1"
 environment = "dev"
 
-firestore_database_id = "dev"
+firestore_database_id = "dev-db"
 
 cloud_run_min_instances        = 0
 cloud_run_max_instances        = 2
 cloud_run_concurrency          = 20
 cloud_run_timeout_seconds      = 3600
-cloud_run_allow_unauthenticated = false
+cloud_run_allow_unauthenticated = true
 
 # dev環境をIAM認証で叩ける開発者をここに列挙する（例: "user:you@example.com"）
 dev_invoker_members = []
@@ -23,3 +23,17 @@ github_actions_deploy_sa_email = "REPLACE_WITH_BOOTSTRAP_OUTPUT"
 
 tasks_max_concurrent_dispatches = 5
 tasks_max_dispatches_per_second = 2
+
+# agent/deploy.py create実行後、出力されたresource_nameに置き換える
+agent_engine_resource_name = ""
+
+# 通常はproject_idと同じでよい
+firebase_project_id = "real-conversation-agents"
+
+# frontendのFirebase Hosting URL（dev用サイト）
+cors_allowed_origins = "https://real-conversation-agents-dev.web.app,https://real-conversation-agents-dev.firebaseapp.com"
+
+app_check_enforcement_mode   = "monitor"
+auth_token_ttl_seconds       = 3600
+stream_ticket_ttl_seconds    = 60
+rate_limit_per_ip_per_minute = 20

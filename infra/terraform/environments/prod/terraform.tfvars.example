@@ -18,3 +18,17 @@ tasks_max_dispatches_per_second = 2
 
 # infra/bootstrap/実行後、出力されたgithub-actions-deploy-saのメールアドレスに置き換える
 github_actions_deploy_sa_email = "REPLACE_WITH_BOOTSTRAP_OUTPUT"
+
+# agent/deploy.py create実行後、出力されたresource_nameに置き換える
+agent_engine_resource_name = ""
+
+# 通常はproject_idと同じでよい
+firebase_project_id = "real-conversation-agents"
+
+# frontendのFirebase Hosting URL（prod用サイト）
+cors_allowed_origins = "https://real-conversation-agents.web.app,https://real-conversation-agents.firebaseapp.com"
+
+app_check_enforcement_mode   = "enforce"
+auth_token_ttl_seconds       = 3600
+stream_ticket_ttl_seconds    = 60
+rate_limit_per_ip_per_minute = 10
