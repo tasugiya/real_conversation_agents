@@ -14,6 +14,12 @@ _internal/
 
 # Firebase Hosting
 /firebase.json
+
+# .firebaserc / firebase.json ARE committed here on purpose: CI/CD
+# (.github/workflows/cd.yml deploy-frontend) needs them present in the
+# checked-out repo to know the dev/prod Hosting site targets.
+!.firebaserc
+!/firebase.json
 *.cache
 hosting/.cache
 
