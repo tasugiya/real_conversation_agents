@@ -23,3 +23,17 @@ github_actions_deploy_sa_email = "REPLACE_WITH_BOOTSTRAP_OUTPUT"
 
 tasks_max_concurrent_dispatches = 5
 tasks_max_dispatches_per_second = 2
+
+# agent/deploy.py create実行後、出力されたresource_nameに置き換える
+agent_engine_resource_name = ""
+
+# 通常はproject_idと同じでよい
+firebase_project_id = "real-conversation-agents"
+
+# frontendのFirebase Hosting URL（dev用サイト）
+cors_allowed_origins = ""
+
+app_check_enforcement_mode   = "monitor"
+auth_token_ttl_seconds       = 3600
+stream_ticket_ttl_seconds    = 60
+rate_limit_per_ip_per_minute = 20

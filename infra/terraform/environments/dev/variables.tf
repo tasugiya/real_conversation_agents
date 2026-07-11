@@ -79,3 +79,42 @@ variable "github_actions_deploy_sa_email" {
   type        = string
   description = "infra/bootstrap/で作成した共有github-actions-deploy-saのメールアドレス（bootstrap実行後に値を埋める）"
 }
+
+variable "agent_engine_resource_name" {
+  type        = string
+  description = "agent/deploy.py（create）実行後に確定するAgent Engineのresource_name。以降はupdateで同じ値を使い続ける"
+  default     = ""
+}
+
+variable "firebase_project_id" {
+  type        = string
+  description = "App Checkトークン検証に使うFirebaseプロジェクトID（通常はproject_idと同じ）"
+  default     = ""
+}
+
+variable "cors_allowed_origins" {
+  type        = string
+  description = "許可するfrontendオリジン（Firebase HostingのURL）"
+  default     = ""
+}
+
+variable "app_check_enforcement_mode" {
+  type    = string
+  default = "monitor"
+}
+
+variable "auth_token_ttl_seconds" {
+  type    = number
+  default = 3600
+}
+
+variable "stream_ticket_ttl_seconds" {
+  type    = number
+  default = 60
+}
+
+variable "rate_limit_per_ip_per_minute" {
+  type        = number
+  description = "Cloud Run 1インスタンスあたりの上限（docs/infra/03_SECURITY.md §7）"
+  default     = 20
+}

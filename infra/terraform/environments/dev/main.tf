@@ -76,10 +76,20 @@ module "cloud_run_api" {
   allow_unauthenticated = var.cloud_run_allow_unauthenticated
 
   env_vars = {
-    GCP_PROJECT_ID        = var.project_id
-    GCP_REGION            = var.region
-    ENVIRONMENT           = var.environment
-    FIRESTORE_DATABASE_ID = var.firestore_database_id
+    GCP_PROJECT_ID               = var.project_id
+    GCP_REGION                   = var.region
+    ENVIRONMENT                  = var.environment
+    FIRESTORE_DATABASE_ID        = var.firestore_database_id
+    AGENT_ENGINE_RESOURCE_NAME   = var.agent_engine_resource_name
+    CLOUD_TASKS_QUEUE_NAME       = module.cloud_tasks.queue_name
+    CLOUD_TASKS_INVOKER_SA_EMAIL = module.iam.cloud_tasks_invoker_sa_email
+    FIREBASE_PROJECT_ID          = var.firebase_project_id
+    CORS_ALLOWED_ORIGINS         = var.cors_allowed_origins
+    APP_CHECK_ENFORCEMENT_MODE   = var.app_check_enforcement_mode
+    AUTH_TOKEN_TTL_SECONDS       = tostring(var.auth_token_ttl_seconds)
+    STREAM_TICKET_TTL_SECONDS    = tostring(var.stream_ticket_ttl_seconds)
+    RATE_LIMIT_PER_IP_PER_MINUTE = tostring(var.rate_limit_per_ip_per_minute)
+    CLOUD_RUN_MAX_INSTANCES      = tostring(var.cloud_run_max_instances)
   }
 }
 
