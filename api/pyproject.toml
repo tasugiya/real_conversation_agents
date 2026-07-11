@@ -1,0 +1,27 @@
+[project]
+name = "real-conv-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+  "pyjwt>=2.9",
+  "bcrypt>=4.2",
+  "google-cloud-firestore>=2.19",
+  "google-cloud-secret-manager>=2.20",
+  "google-cloud-tasks>=2.16",
+  "google-cloud-aiplatform[agent_engines,adk]>=1.70.0",
+  "firebase-admin>=6.5",
+]
+
+[tool.ruff]
+line-length = 100
+
+# No [build-system] section: this is an application, not a distributed
+# package. The Dockerfile installs dependencies directly from this file via
+# `uv pip install -r pyproject.toml` (uv's pip-compatible interface reads
+# [project.dependencies] the same way it would read a requirements.txt),
+# rather than `pip install .` / `uv sync`, to avoid needing proper
+# setuptools/uv-project package discovery for a plain `src/` app layout.
