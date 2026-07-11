@@ -67,6 +67,9 @@ export const api = {
   },
   async connect(sessionId: string, token: string, onEvent: (event: StreamEvent) => void, onError: (message: string) => void): Promise<StreamConnection> {
     if (usingMockApi) return connectMock(sessionId, onEvent);
+    // WebSocket handshakes can't carry an Authorization header, so the long-lived
+    // access token is exchanged here for a short-lived, single-use stream ticket
+    // that travels safely in the URL query string instead.
     const ticket = await request<{ stream_ticket: string }>(`/v1/sessions/${sessionId}/stream-ticket`, token, { method: "POST" });
     const socket = new WebSocket(`${baseUrl!.replace(/^http/, "ws")}/v1/sessions/${sessionId}/stream?ticket=${encodeURIComponent(ticket.stream_ticket)}`);
     socket.onmessage = (message) => {

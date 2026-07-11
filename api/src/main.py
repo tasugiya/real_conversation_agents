@@ -15,6 +15,8 @@ logging.basicConfig(level=settings.log_level.upper())
 
 app = FastAPI(title="real-conv-api")
 
+# allow_origins must be an explicit list, not "*": browsers reject a wildcard
+# origin whenever allow_credentials is True.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in settings.cors_allowed_origins.split(",") if o],

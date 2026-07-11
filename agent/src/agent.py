@@ -21,6 +21,8 @@ from .prompts.root_instruction import ROOT_INSTRUCTION
 # Vertex AI Gemini Live model identifier. Re-verify against
 # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api before
 # relying on this in an environment, since Live model names change.
+# Live API models are only available in a subset of regions -- confirm
+# this model is served in `region` (us-central1) before switching regions.
 MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 
 root_agent = Agent(
