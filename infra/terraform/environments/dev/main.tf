@@ -128,6 +128,14 @@ resource "google_service_account_iam_member" "gha_act_as_agent_engine" {
   member             = "serviceAccount:${var.github_actions_deploy_sa_email}"
 }
 
+# api-saはCloud Tasksへタスクを積む際、OIDCトークンの対象としてcloud_tasks_invoker_sa
+# をactAsする必要がある（デプロイ時ではなくリクエスト実行時に必要）。
+resource "google_service_account_iam_member" "api_act_as_tasks_invoker" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${module.iam.cloud_tasks_invoker_sa_email}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${module.iam.api_sa_email}"
+}
+
 # agent_engines.create()/update()はInline Source Deploymentでも
 # vertexai.init(staging_bucket=...)を要求するため、ビルド成果物の一時置き場を用意する。
 resource "google_storage_bucket" "agent_staging" {
