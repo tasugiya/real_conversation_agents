@@ -1,0 +1,39 @@
+name: インフラ (Infra)
+description: Terraform・GCPリソース・CI/CDに関する変更
+title: "[Infra]: "
+labels: ["infra"]
+body:
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 目的
+    validations:
+      required: true
+  - type: textarea
+    id: target_resources
+    attributes:
+      label: 対象リソース / モジュール
+      description: 例. infra/terraform/modules/cloud-run
+    validations:
+      required: true
+  - type: textarea
+    id: plan_impact
+    attributes:
+      label: terraform planへの影響想定
+      description: 新規作成/変更/削除されるリソースを記載する
+    validations:
+      required: false
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: 関連文書 / 関連PR
+    validations:
+      required: false

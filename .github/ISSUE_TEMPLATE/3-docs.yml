@@ -1,0 +1,40 @@
+name: ドキュメント (Docs)
+description: 設計文書・開発規則等の追加・修正
+title: "[Docs]: "
+labels: ["docs"]
+body:
+  - type: input
+    id: target
+    attributes:
+      label: 対象文書
+      description: 例. docs/infra/01_ARCHITECTURE.md
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 目的
+    validations:
+      required: true
+  - type: textarea
+    id: todo
+    attributes:
+      label: やること
+      value: |
+        - [ ]
+    validations:
+      required: false
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: 関連文書 / 関連PR
+    validations:
+      required: false

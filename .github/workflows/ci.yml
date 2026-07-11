@@ -1,0 +1,113 @@
+name: CI
+
+# PRではデプロイしない。lint/typecheck/build/test（変更対象のみ）とterraform planのみ実行する
+# （docs/infra/04_DEPLOY.md §2・§3）。
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      api: ${{ steps.filter.outputs.api }}
+      agent: ${{ steps.filter.outputs.agent }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'packages/shared-schemas/**'
+            api:
+              - 'api/**'
+              - 'packages/shared-schemas/**'
+            agent:
+              - 'agent/**'
+              - 'packages/shared-schemas/**'
+            infra:
+              - 'infra/terraform/**'
+
+  frontend-ci:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: frontend/package.json追加後、実際のlint/typecheck/build/testステップに置き換える
+      - name: placeholder
+        run: echo "frontend code is not yet added. Replace this step with npm ci / lint / typecheck / build / test."
+
+  api-ci:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: api/pyproject.toml追加後、ruff/mypy/pytestの実ステップに置き換える
+      - name: placeholder
+        run: echo "api code is not yet added. Replace this step with ruff / mypy / pytest steps."
+
+  agent-ci:
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: agent/コード追加後、ruff/mypy/pytest + Agent behavior testの実ステップに置き換える
+      # （Agent behavior testは実Gemini呼び出しを伴うためagent/**変更時のみ実行する。docs/DEVOPS.md テスト節）
+      - name: placeholder
+        run: echo "agent code is not yet added. Replace this step with ruff / mypy / pytest / agent behavior test steps."
+
+  terraform-plan:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, prod]
+    permissions:
+      contents: read
+      id-token: write
+    # 注意: environment: を指定しない。指定するとPRのplanジョブがGitHub Environmentの
+    # required reviewers（prod用の承認ゲート）に巻き込まれ、承認待ちで止まってしまう。
+    # 承認ゲートはcd.ymlのapply側だけにかける（docs/infra/04_DEPLOY.md §3）。
+    env:
+      # terraform.tfvarsはローカル専用でcommitしない（.gitignoreで除外済み）。
+      # CIはTF_VAR_*環境変数で同じ変数に値を渡す。値はリポジトリのVariablesに登録する
+      # （docs/infra/02_PARAMS_DEF.md §13、いずれも非secret値）。
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_github_actions_deploy_sa_email: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 注意: infra/bootstrap/実行前は、backend.tfのbucketがプレースホルダーのままのため
+      # terraform initはここで失敗する。bootstrap完了後にvars/secretsを設定すること
+      # （docs/infra/04_DEPLOY.md §4）。
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: terraform fmt check
+        run: terraform -chdir=infra/terraform/environments/${{ matrix.environment }} fmt -check -recursive
+
+      - name: terraform init
+        run: terraform -chdir=infra/terraform/environments/${{ matrix.environment }} init
+
+      - name: terraform validate
+        run: terraform -chdir=infra/terraform/environments/${{ matrix.environment }} validate
+
+      - name: terraform plan
+        run: terraform -chdir=infra/terraform/environments/${{ matrix.environment }} plan -no-color
