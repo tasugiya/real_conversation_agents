@@ -1,0 +1,42 @@
+name: エージェント (Agent)
+description: prompt・persona・tool schema等、Agent挙動の変更
+title: "[Agent]: "
+labels: ["agent"]
+body:
+  - type: textarea
+    id: change
+    attributes:
+      label: Agent変更内容
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: 変更理由
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: 期待する振る舞い
+    validations:
+      required: true
+  - type: textarea
+    id: sample_conversation
+    attributes:
+      label: 確認した会話例
+      description: Agent behavior testで使う固定入力・期待される応答の例
+    validations:
+      required: false
+  - type: textarea
+    id: concerns
+    attributes:
+      label: 既知の懸念
+    validations:
+      required: false
+  - type: textarea
+    id: refs
+    attributes:
+      label: 関連文書 / 関連PR
+    validations:
+      required: false

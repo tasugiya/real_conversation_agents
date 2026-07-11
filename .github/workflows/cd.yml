@@ -1,0 +1,161 @@
+name: CD
+
+# devへのpush: 変更対象のみdev環境へ自動デプロイ
+# mainへのマージ(push): 変更対象のみprod環境へデプロイ（GitHub Environmentの承認ゲート必須）
+# （docs/infra/04_DEPLOY.md §2・§3）
+
+on:
+  push:
+    branches: [dev, main]
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      api: ${{ steps.filter.outputs.api }}
+      agent: ${{ steps.filter.outputs.agent }}
+      infra: ${{ steps.filter.outputs.infra }}
+      environment: ${{ steps.env.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.event.before }}
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'packages/shared-schemas/**'
+            api:
+              - 'api/**'
+              - 'packages/shared-schemas/**'
+            agent:
+              - 'agent/**'
+              - 'packages/shared-schemas/**'
+            infra:
+              - 'infra/terraform/**'
+
+      - name: resolve target environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-infra:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.changes.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT_EMAIL }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: terraform apply
+        run: |
+          terraform -chdir=infra/terraform/environments/${{ needs.changes.outputs.environment }} init
+          terraform -chdir=infra/terraform/environments/${{ needs.changes.outputs.environment }} apply -auto-approve
+
+  # deploy-infraがinfra変更なしでskipされた場合でも、frontend/api/agentは実行できるようにする。
+  # (!cancelled() で「デプロイ先ジョブがfailureでない限り続行」を明示している)
+
+  deploy-frontend:
+    needs: [changes, deploy-infra]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.frontend == 'true' &&
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ needs.changes.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
+      # TODO: frontend/コード追加後、build + firebase deploy --only hosting:<site>に置き換える
+      - name: placeholder
+        run: echo "frontend deploy is not yet implemented."
+
+  deploy-api:
+    needs: [changes, deploy-infra]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.api == 'true' &&
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ needs.changes.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
+      # TODO: api/コード追加後、docker build/push(Artifact Registry) + deploy-cloudrun actionに置き換える
+      - name: placeholder
+        run: echo "api deploy is not yet implemented."
+
+  deploy-agent:
+    needs: [changes, deploy-infra]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.agent == 'true' &&
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ needs.changes.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
+      # TODO: agent/コード追加後、python agent/deploy.py (agent_engines.create/update) に置き換える
+      - name: placeholder
+        run: echo "agent deploy is not yet implemented."
+
+  release:
+    needs: [changes, deploy-frontend, deploy-api, deploy-agent]
+    if: |
+      !cancelled() &&
+      needs.changes.outputs.environment == 'prod' &&
+      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
+      (needs.deploy-api.result == 'success' || needs.deploy-api.result == 'skipped') &&
+      (needs.deploy-agent.result == 'success' || needs.deploy-agent.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: create release tag（記録用。デプロイのトリガーではない）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v$(date +%Y.%m.%d)-${GITHUB_SHA::7}" --generate-notes
