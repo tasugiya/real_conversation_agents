@@ -8,7 +8,7 @@ resource "google_iam_workload_identity_pool" "github" {
   project                   = var.project_id
   workload_identity_pool_id = var.pool_id
   display_name              = "GitHub Actions Pool"
-  description                = "GitHub ActionsからのOIDC federation用"
+  description               = "GitHub ActionsからのOIDC federation用"
 }
 
 resource "google_iam_workload_identity_pool_provider" "github" {
@@ -32,6 +32,6 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 
 resource "google_service_account_iam_member" "wif_impersonation" {
   service_account_id = var.service_account_name
-  role                = "roles/iam.workloadIdentityUser"
-  member              = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
 }

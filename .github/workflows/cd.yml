@@ -200,6 +200,8 @@ jobs:
       # so it can deploy a Reasoning Engine that runs as this identity.
       AGENT_ENGINE_SA_EMAIL: agent-engine-sa-${{ needs.changes.outputs.environment }}@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
       DISPLAY_NAME: real-conv-agent-${{ needs.changes.outputs.environment }}
+      # bucket created by infra/terraform/environments/*/main.tf (google_storage_bucket.agent_staging)
+      STAGING_BUCKET: gs://${{ vars.GCP_PROJECT_ID }}-agent-staging-${{ needs.changes.outputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -217,12 +219,17 @@ jobs:
 
       - name: deploy agent (create on first run, update afterwards)
         working-directory: agent
+        # set -o pipefail: without it, `python deploy.py | tee ...` reports the
+        # exit code of `tee` (always 0), silently masking a failed deploy.py
+        # as a successful step/job.
         run: |
+          set -o pipefail
           python deploy.py \
             --project-id "${{ vars.GCP_PROJECT_ID }}" \
             --region us-central1 \
             --service-account "$AGENT_ENGINE_SA_EMAIL" \
             --display-name "$DISPLAY_NAME" \
+            --staging-bucket "$STAGING_BUCKET" \
             | tee deploy-output.txt
 
       - name: surface resource_name in the run summary

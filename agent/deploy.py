@@ -3,7 +3,8 @@
 Usage:
     python deploy.py --project-id PROJECT --region REGION \\
         --service-account agent-engine-sa-dev@PROJECT.iam.gserviceaccount.com \\
-        --display-name real-conv-agent-dev
+        --display-name real-conv-agent-dev \\
+        --staging-bucket gs://PROJECT-agent-staging-dev
 
 Automatically creates a new Agent Engine on the first run for a given
 --display-name, or updates the existing one (found by looking up that same
@@ -54,9 +55,19 @@ def main() -> None:
     parser.add_argument("--region", required=True)
     parser.add_argument("--service-account", required=True)
     parser.add_argument("--display-name", required=True)
+    parser.add_argument(
+        "--staging-bucket",
+        required=True,
+        help="gs://... bucket for build artifacts. Required by agent_engines.create()/"
+        "update() even with Inline Source Deployment.",
+    )
     args = parser.parse_args()
 
-    vertexai.init(project=args.project_id, location=args.region)
+    vertexai.init(
+        project=args.project_id,
+        location=args.region,
+        staging_bucket=args.staging_bucket,
+    )
 
     app = build_app()
     existing_resource_name = find_existing_resource_name(args.display_name)
