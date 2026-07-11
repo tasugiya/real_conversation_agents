@@ -115,15 +115,30 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # region is inlined (us-central1, docs/infra/00_OVERVIEW.md §5) rather
+      # than a GitHub variable, since it's the same for every environment.
+      IMAGE: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/real-conv-agents-${{ needs.changes.outputs.environment }}/api:${{ github.sha }}
+      SERVICE_NAME: real-conv-api-${{ needs.changes.outputs.environment }}
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT_EMAIL }}
-      # TODO: api/コード追加後、docker build/push(Artifact Registry) + deploy-cloudrun actionに置き換える
-      - name: placeholder
-        run: echo "api deploy is not yet implemented."
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: configure docker auth for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+      - name: build and push image
+        # build context is the repo root (see api/Dockerfile's own comment)
+        run: |
+          docker build -f api/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+      - uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          image: ${{ env.IMAGE }}
+          region: us-central1
 
   deploy-agent:
     needs: [changes, deploy-infra]
