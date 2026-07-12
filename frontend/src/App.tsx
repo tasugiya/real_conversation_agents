@@ -520,7 +520,15 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
         }
         return;
       case "system.error":
+        // The server always closes the connection right after sending this
+        // (rate limit exceeded, or an unhandled exception in the stream) --
+        // wrap up the same way session.time_limit does instead of letting
+        // the resulting onclose retry into a dead end.
         onError(event.message ?? t("conversation.errorContinue"));
+        if (!sessionEndedRef.current) {
+          sessionEndedRef.current = true;
+          void finish();
+        }
         return;
       default:
         return;

@@ -232,7 +232,16 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
     # ------------------------------------------------------------------
 
     async def upstream() -> None:
-        """Read WebSocket frames and forward to the agent."""
+        """Read WebSocket frames and forward to the agent.
+
+        The per-minute counter below only applies to text/control frames
+        (ping, user.text, activity signals, etc.) -- audio binary frames are
+        exempt. Real-time mic streaming legitimately sends far more than
+        100 frames/min (~125/sec at 16kHz with small worklet buffers, even
+        after client-side batching); this limit exists to bound abuse via
+        control-message flooding, not to constrain the inherent frequency
+        of an audio stream.
+        """
         nonlocal graceful_end
         msg_count = 0
         window_start = asyncio.get_event_loop().time()
@@ -242,7 +251,12 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
             if message["type"] == "websocket.disconnect":
                 return
 
-            # Per-minute message rate limit
+            audio_bytes = message.get("bytes")
+            if audio_bytes is not None:
+                await agent_session.send_audio(audio_bytes)
+                continue
+
+            # Per-minute message rate limit (text/control frames only)
             now = asyncio.get_event_loop().time()
             if now - window_start >= 60:
                 msg_count = 0
@@ -255,10 +269,6 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
                 session_over.set()
                 return
 
-            audio_bytes = message.get("bytes")
-            if audio_bytes is not None:
-                await agent_session.send_audio(audio_bytes)
-                continue
             text_frame = message.get("text")
             if text_frame is not None:
                 await _handle_client_event(json.loads(text_frame))

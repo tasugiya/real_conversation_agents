@@ -176,6 +176,26 @@ export const api = {
     socket.binaryType = "arraybuffer";
     let closingIntentionally = false;
     const playback = createPlaybackQueue();
+
+    // Wait for the handshake to actually succeed before returning. Without
+    // this, callers (attemptConnect() in App.tsx) treat merely constructing
+    // the WebSocket as "connected" and reset their retry counter, so a
+    // rejected handshake (e.g. a 403 from an expired/invalid ticket) never
+    // counts toward MAX_STREAM_RETRIES and retries indefinitely instead of
+    // surfacing the interrupted screen after a bounded number of attempts.
+    await new Promise<void>((resolve, reject) => {
+      const handleOpen = () => {
+        socket.removeEventListener("error", handleOpenError);
+        resolve();
+      };
+      const handleOpenError = () => {
+        socket.removeEventListener("open", handleOpen);
+        reject(new Error("会話ストリームへの接続に失敗しました。"));
+      };
+      socket.addEventListener("open", handleOpen, { once: true });
+      socket.addEventListener("error", handleOpenError, { once: true });
+    });
+
     socket.onmessage = (message) => {
       if (typeof message.data === "string") {
         const data = JSON.parse(message.data) as {
