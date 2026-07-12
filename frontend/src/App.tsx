@@ -1,14 +1,15 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, usingMockApi } from "./api";
+import { LocaleContext, readStoredLocale, translate, useLocale, useT, type Locale } from "./i18n";
 import { PERSONA_POOL, personaFor } from "./personas";
 import { navigate, useRoute, type Route } from "./router";
-import { activeSessionStorage, authStorage, recentSessionsStorage } from "./storage";
+import { activeSessionStorage, authStorage, localeStorage, recentSessionsStorage } from "./storage";
 import type { ConversationMessage, InputMode, OutputMode, Review, Session, SessionStatus, StreamConnection, StreamEvent, Topic, TopicPack } from "./types";
 
-const FLOW_STEPS: { key: Route; label: string }[] = [
-  { key: "/setup", label: "Set up" },
-  { key: "/session", label: "Conversation" },
-  { key: "/review", label: "Review" },
+const FLOW_STEPS: { key: Route; labelKey: "stepper.setup" | "stepper.conversation" | "stepper.review" }[] = [
+  { key: "/setup", labelKey: "stepper.setup" },
+  { key: "/session", labelKey: "stepper.conversation" },
+  { key: "/review", labelKey: "stepper.review" },
 ];
 
 const inputClass = "min-h-[44px] w-full rounded-md border border-border bg-white px-3.5 text-ink outline-none transition focus:border-accent";
@@ -17,9 +18,26 @@ const primaryButtonClass = "min-h-[44px] rounded-md bg-accent px-5 font-semibold
 const newMessage = (speakerId: string, text: string, status: ConversationMessage["status"] = "final"): ConversationMessage => ({ id: crypto.randomUUID(), speakerId, text, status });
 
 export default function App() {
+  const [locale, setLocaleState] = useState<Locale>(() => readStoredLocale());
+  function setLocale(next: Locale) {
+    localeStorage.set(next);
+    setLocaleState(next);
+  }
+  const t = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) => translate(locale, key, vars);
+  return (
+    <LocaleContext.Provider value={{ locale, setLocale, t }}>
+      <AppShell />
+    </LocaleContext.Provider>
+  );
+}
+
+function AppShell() {
   const route = useRoute();
+  const t = useT();
+  const [locale, setLocale] = useLocale();
   const [token, setToken] = useState<string | null>(() => authStorage.get()?.token ?? null);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicPack, setTopicPack] = useState<TopicPack | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [review, setReview] = useState<Review | null>(null);
@@ -46,12 +64,7 @@ export default function App() {
       if (startPath === "/") navigate("/setup", { replace: true });
 
       if (startPath === "/" || startPath === "/setup") {
-        try {
-          const fetched = await api.topics(auth.token);
-          if (!cancelled) setTopics(fetched);
-        } catch {
-          // Setup screen surfaces its own error once the user tries to start.
-        }
+        loadTopics(auth.token);
       }
 
       if (startPath === "/session" || startPath === "/review") {
@@ -65,7 +78,7 @@ export default function App() {
             const stillReviewable = status.review_available && (!status.expires_at || new Date(status.expires_at) > new Date());
             if (status.status === "completed") {
               if (!stillReviewable) {
-                setError("このセッションの復習期限が切れています。");
+                setError(t("app.error.sessionExpired"));
                 activeSessionStorage.clear();
                 navigate("/setup", { replace: true });
               } else {
@@ -84,7 +97,7 @@ export default function App() {
             }
           } catch (reason) {
             if (!cancelled) {
-              setError(reason instanceof Error ? reason.message : "セッション情報を復元できませんでした。");
+              setError(reason instanceof Error ? reason.message : t("app.error.sessionRestoreFailed"));
               activeSessionStorage.clear();
               navigate("/setup", { replace: true });
             }
@@ -100,16 +113,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function loadTopics(authToken: string) {
+    setTopicsLoading(true);
+    api
+      .topics(authToken)
+      .then((fetched) => setTopics(fetched))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : t("app.error.topicsFailed")))
+      .finally(() => setTopicsLoading(false));
+  }
+
   async function login(username: string, password: string) {
     setError(null);
     try {
       const auth = await api.login(username, password);
       authStorage.set({ token: auth.access_token, expiresAt: auth.expires_at });
       setToken(auth.access_token);
-      setTopics(await api.topics(auth.access_token));
       navigate("/setup");
+      loadTopics(auth.access_token);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "認証に失敗しました。");
+      setError(reason instanceof Error ? reason.message : t("app.error.loginFailed"));
     }
   }
 
@@ -123,14 +145,14 @@ export default function App() {
         await delay(500);
         pack = await api.topicPack(job.topic_pack_id, token);
       }
-      if (pack.status !== "ready") throw new Error("Topic Packの生成に失敗しました。");
+      if (pack.status !== "ready") throw new Error(t("app.error.topicPackFailed"));
       const created = await api.createSession(pack.topic_pack_id, agentCount, language, inputMode, outputMode, token);
       activeSessionStorage.set({ sessionId: created.session_id, topicPackId: pack.topic_pack_id, participants: created.participants });
       setTopicPack(pack);
       setSession(created);
       navigate("/session");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "セッションを開始できませんでした。");
+      setError(reason instanceof Error ? reason.message : t("app.error.sessionStartFailed"));
     }
   }
 
@@ -143,7 +165,7 @@ export default function App() {
       setReview(result);
       navigate("/review");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Reviewを生成できませんでした。");
+      setError(reason instanceof Error ? reason.message : t("app.error.reviewFailed"));
     }
   }
 
@@ -157,12 +179,12 @@ export default function App() {
   }
 
   function goToRecentSessions() {
-    if (route === "/session" && !window.confirm("会話中です。移動すると接続が切れます。よろしいですか？")) return;
+    if (route === "/session" && !window.confirm(t("app.confirmLeaveSession"))) return;
     navigate("/reviews");
   }
 
   if (booting) {
-    return <main className="grid min-h-[60vh] place-items-center text-sm text-muted">Loading…</main>;
+    return <main className="grid min-h-[60vh] place-items-center text-sm text-muted">{t("app.loading")}</main>;
   }
 
   return (
@@ -176,9 +198,10 @@ export default function App() {
           {(route === "/setup" || route === "/session" || route === "/review") && <Stepper current={route} />}
           {token && route !== "/reviews" && (
             <button type="button" onClick={goToRecentSessions} className="text-xs font-semibold text-muted transition hover:text-accent">
-              Recent sessions
+              {t("app.recentSessions")}
             </button>
           )}
+          <PillGroup ariaLabel="Display language" value={locale} onChange={setLocale} options={[{ value: "ja", label: "日本語" }, { value: "en", label: "EN" }]} />
         </div>
       </header>
 
@@ -189,7 +212,7 @@ export default function App() {
       )}
 
       {route === "/" && <AuthScreen onSubmit={login} />}
-      {route === "/setup" && <SetupScreen topics={topics} onStart={startSession} />}
+      {route === "/setup" && <SetupScreen topics={topics} topicsLoading={topicsLoading} onStart={startSession} />}
       {route === "/session" && session && token && (
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
@@ -207,13 +230,14 @@ export default function App() {
 }
 
 function Stepper({ current }: { current: Route }) {
+  const t = useT();
   const activeIndex = FLOW_STEPS.findIndex((step) => step.key === current);
   return (
     <ol className="flex items-center gap-2 text-xs font-semibold">
       {FLOW_STEPS.map((step, index) => (
         <li key={step.key} className="flex items-center gap-2">
           {index > 0 && <span aria-hidden className="h-px w-6 bg-border" />}
-          <span className={index === activeIndex ? "text-accent" : index < activeIndex ? "text-ink" : "text-muted"}>{step.label}</span>
+          <span className={index === activeIndex ? "text-accent" : index < activeIndex ? "text-ink" : "text-muted"}>{t(step.labelKey)}</span>
         </li>
       ))}
     </ol>
@@ -243,6 +267,7 @@ function PillGroup<T extends string | number>({ options, value, onChange, ariaLa
 }
 
 function AuthScreen({ onSubmit }: { onSubmit: (username: string, password: string) => Promise<void> }) {
+  const t = useT();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -255,33 +280,35 @@ function AuthScreen({ onSubmit }: { onSubmit: (username: string, password: strin
   return (
     <section className="grid min-h-[56vh] items-center gap-12 md:grid-cols-[1.15fr_0.85fr] md:gap-24">
       <div className="max-w-lg">
-        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">Group English practice</p>
+        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">{t("auth.eyebrow")}</p>
         <h2 className="font-display text-4xl font-medium leading-[1.1] sm:text-5xl">
-          Join a conversation,
+          {t("auth.headline1")}
           <br />
-          not a lesson.
+          {t("auth.headline2")}
         </h2>
-        <p className="mt-5 max-w-md leading-relaxed text-muted">A handful of AI personas keep a conversation moving on their own. Speak up whenever you are ready, then see how you did.</p>
+        <p className="mt-5 max-w-md leading-relaxed text-muted">{t("auth.subhead")}</p>
       </div>
       <form onSubmit={submit} className="grid gap-4 border-t border-border pt-6 md:border-l md:border-t-0 md:pl-9 md:pt-0">
         <label className="grid gap-1.5 text-sm font-semibold">
-          Username
+          {t("auth.username")}
           <input className={inputClass} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
         </label>
         <label className="grid gap-1.5 text-sm font-semibold">
-          Password
+          {t("auth.password")}
           <input className={inputClass} type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
         </label>
         <button type="submit" className={primaryButtonClass} disabled={busy}>
-          {busy ? "Signing in..." : "Start"}
+          {busy ? t("auth.submitBusy") : t("auth.submit")}
         </button>
-        {usingMockApi && <p className="text-xs text-muted">Mock mode accepts any non-empty credentials.</p>}
+        {usingMockApi && <p className="text-xs text-muted">{t("auth.mockHint")}</p>}
       </form>
     </section>
   );
 }
 
-function SetupScreen({ topics, onStart }: { topics: Topic[]; onStart: (topic: string, count: number, language: string, input: InputMode, output: OutputMode) => Promise<void> }) {
+function SetupScreen({ topics, topicsLoading, onStart }: { topics: Topic[]; topicsLoading: boolean; onStart: (topic: string, count: number, language: string, input: InputMode, output: OutputMode) => Promise<void> }) {
+  const t = useT();
+  const [locale] = useLocale();
   const [topic, setTopic] = useState(topics[0]?.topic_id ?? "");
   const [agentCount, setAgentCount] = useState(2);
   const [language, setLanguage] = useState("en");
@@ -300,31 +327,38 @@ function SetupScreen({ topics, onStart }: { topics: Topic[]; onStart: (topic: st
   return (
     <section className="max-w-3xl">
       <div className="mb-8">
-        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">Set the stage</p>
-        <h2 className="font-display text-3xl font-medium">Choose a topic and enter the room.</h2>
+        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">{t("setup.eyebrow")}</p>
+        <h2 className="font-display text-3xl font-medium">{t("setup.title")}</h2>
       </div>
 
       <fieldset className="mb-8 border-0 p-0">
-        <legend className="mb-2.5 text-sm font-bold">Topic</legend>
-        <div className="grid gap-2.5 sm:grid-cols-3">
-          {topics.map((item) => {
-            const selected = topic === item.topic_id;
-            return (
-              <label
-                key={item.topic_id}
-                className={`relative block cursor-pointer rounded-lg border bg-white p-4 text-sm font-semibold transition ${selected ? "border-accent shadow-[inset_0_-3px_0_var(--color-accent)]" : "border-border hover:border-accent/50"}`}
-              >
-                <input type="radio" name="topic" className="absolute h-px w-px opacity-0" value={item.topic_id} checked={selected} onChange={() => setTopic(item.topic_id)} />
-                {item.title}
-              </label>
-            );
-          })}
-        </div>
+        <legend className="mb-2.5 text-sm font-bold">{t("setup.topicLegend")}</legend>
+        {topicsLoading && topics.length === 0 ? (
+          <div className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-white/60 px-4 py-6 text-sm text-muted">
+            <span aria-hidden className="h-2 w-2 shrink-0 animate-ping rounded-full bg-accent" />
+            {t("setup.topicLoading")}
+          </div>
+        ) : (
+          <div className="grid gap-2.5 sm:grid-cols-3">
+            {topics.map((item) => {
+              const selected = topic === item.topic_id;
+              return (
+                <label
+                  key={item.topic_id}
+                  className={`relative block cursor-pointer rounded-lg border bg-white p-4 text-sm font-semibold transition ${selected ? "border-accent shadow-[inset_0_-3px_0_var(--color-accent)]" : "border-border hover:border-accent/50"}`}
+                >
+                  <input type="radio" name="topic" className="absolute h-px w-px opacity-0" value={item.topic_id} checked={selected} onChange={() => setTopic(item.topic_id)} />
+                  {item.title}
+                </label>
+              );
+            })}
+          </div>
+        )}
       </fieldset>
 
       <div className="mb-8">
-        <p className="mb-2.5 text-sm font-bold">Who might join</p>
-        <p className="mb-3 text-xs text-muted">{agentCount} of these voices join at random each session.</p>
+        <p className="mb-2.5 text-sm font-bold">{t("setup.personaHeading")}</p>
+        <p className="mb-3 text-xs text-muted">{t("setup.personaSub", { count: agentCount })}</p>
         <ul className="flex flex-wrap gap-2.5">
           {PERSONA_POOL.map((persona) => (
             <li key={persona.name} className="flex items-center gap-2 rounded-full border border-border bg-white py-1.5 pl-1.5 pr-3.5">
@@ -333,7 +367,7 @@ function SetupScreen({ topics, onStart }: { topics: Topic[]; onStart: (topic: st
               </span>
               <span>
                 <span className="block text-sm font-semibold leading-none">{persona.label}</span>
-                <span className="block max-w-[13rem] text-xs leading-tight text-muted">{persona.personality}</span>
+                <span className="block max-w-[13rem] text-xs leading-tight text-muted">{locale === "ja" ? persona.personalityJa : persona.personality}</span>
               </span>
             </li>
           ))}
@@ -342,25 +376,25 @@ function SetupScreen({ topics, onStart }: { topics: Topic[]; onStart: (topic: st
 
       <div className="mb-9 grid gap-6 sm:grid-cols-2">
         <div>
-          <p className="mb-2 text-sm font-bold">AI voices in the room</p>
-          <PillGroup ariaLabel="AI voices in the room" value={agentCount} onChange={setAgentCount} options={[{ value: 1, label: "1" }, { value: 2, label: "2" }, { value: 3, label: "3" }]} />
+          <p className="mb-2 text-sm font-bold">{t("setup.aiVoices")}</p>
+          <PillGroup ariaLabel={t("setup.aiVoices")} value={agentCount} onChange={setAgentCount} options={[{ value: 1, label: "1" }, { value: 2, label: "2" }, { value: 3, label: "3" }]} />
         </div>
         <div>
-          <p className="mb-2 text-sm font-bold">Conversation language</p>
-          <PillGroup ariaLabel="Conversation language" value={language} onChange={setLanguage} options={[{ value: "en", label: "English" }, { value: "ja", label: "Japanese" }]} />
+          <p className="mb-2 text-sm font-bold">{t("setup.language")}</p>
+          <PillGroup ariaLabel={t("setup.language")} value={language} onChange={setLanguage} options={[{ value: "en", label: t("setup.languageEnglish") }, { value: "ja", label: t("setup.languageJapanese") }]} />
         </div>
         <div>
-          <p className="mb-2 text-sm font-bold">Input</p>
-          <PillGroup ariaLabel="Input" value={inputMode} onChange={setInputMode} options={[{ value: "text", label: "Text" }, { value: "audio", label: "Microphone" }]} />
+          <p className="mb-2 text-sm font-bold">{t("setup.input")}</p>
+          <PillGroup ariaLabel={t("setup.input")} value={inputMode} onChange={setInputMode} options={[{ value: "text", label: t("setup.inputText") }, { value: "audio", label: t("setup.inputMic") }]} />
         </div>
         <div>
-          <p className="mb-2 text-sm font-bold">Output</p>
-          <PillGroup ariaLabel="Output" value={outputMode} onChange={setOutputMode} options={[{ value: "text_only", label: "Text" }, { value: "audio_and_text", label: "Audio and text" }]} />
+          <p className="mb-2 text-sm font-bold">{t("setup.output")}</p>
+          <PillGroup ariaLabel={t("setup.output")} value={outputMode} onChange={setOutputMode} options={[{ value: "text_only", label: t("setup.outputTextOnly") }, { value: "audio_and_text", label: t("setup.outputAudioText") }]} />
         </div>
       </div>
 
       <button type="button" className={primaryButtonClass} onClick={start} disabled={!topic || busy}>
-        {busy ? "Preparing topic..." : "Enter conversation"}
+        {busy ? t("setup.preparing") : t("setup.enter")}
       </button>
     </section>
   );
@@ -393,21 +427,22 @@ function MicIcon({ className }: { className?: string }) {
 }
 
 function InterruptedScreen({ onRetry, onEvaluate, onGoHome, evaluating }: { onRetry: () => void; onEvaluate: () => void; onGoHome: () => void; evaluating: boolean }) {
+  const t = useT();
   return (
     <section className="grid min-h-[50vh] place-items-center text-center">
       <div className="max-w-sm">
-        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-danger">Connection lost</p>
-        <h2 className="font-display mb-3 text-2xl font-medium">会話が中断されました</h2>
-        <p className="mb-8 text-sm text-muted">接続が不安定なようです。もう一度接続するか、ここまでの内容で振り返りを見ることができます。</p>
+        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-danger">{t("interrupted.eyebrow")}</p>
+        <h2 className="font-display mb-3 text-2xl font-medium">{t("interrupted.title")}</h2>
+        <p className="mb-8 text-sm text-muted">{t("interrupted.body")}</p>
         <div className="grid gap-2.5">
           <button type="button" onClick={onRetry} className={primaryButtonClass}>
-            もう一度接続する
+            {t("interrupted.retry")}
           </button>
           <button type="button" onClick={onEvaluate} disabled={evaluating} className="min-h-[44px] rounded-md border border-accent px-5 font-semibold text-accent transition hover:bg-accent-soft disabled:opacity-60">
-            {evaluating ? "評価を作成中..." : "ここまでの内容で評価を見る"}
+            {evaluating ? t("interrupted.evaluateBusy") : t("interrupted.evaluate")}
           </button>
           <button type="button" onClick={onGoHome} className="min-h-[44px] rounded-md border border-border px-5 font-semibold text-muted transition hover:border-accent/50 hover:text-ink">
-            ホームへ戻る
+            {t("interrupted.goHome")}
           </button>
         </div>
       </div>
@@ -418,6 +453,7 @@ function InterruptedScreen({ onRetry, onEvaluate, onGoHome, evaluating }: { onRe
 const MAX_STREAM_RETRIES = 3;
 
 function ConversationScreen({ session, token, topicPack, onFinish, onError, onReset }: { session: Session; token: string; topicPack: TopicPack | null; onFinish: () => Promise<void>; onError: (message: string | null) => void; onReset: () => void }) {
+  const t = useT();
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
@@ -436,7 +472,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
   function handleEvent(event: StreamEvent) {
     switch (event.type) {
       case "session.ready":
-        setMessages((current) => (current.length ? current : [newMessage("system", "The conversation is ready. Say hello when you are ready.")]));
+        setMessages((current) => (current.length ? current : [newMessage("system", t("conversation.readySystemMessage"))]));
         return;
       case "agent.text.delta":
       case "agent.text.final": {
@@ -470,7 +506,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
         setTimeWarning(event.remainingSeconds ?? null);
         return;
       case "system.error":
-        onError(event.message ?? "会話を継続できませんでした。");
+        onError(event.message ?? t("conversation.errorContinue"));
         return;
       default:
         return;
@@ -489,7 +525,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       retryCountRef.current = 0;
       setConnectionState("live");
     } catch (reason) {
-      if (activeRef.current) handleStreamProblem(reason instanceof Error ? reason.message : "会話に接続できませんでした。");
+      if (activeRef.current) handleStreamProblem(reason instanceof Error ? reason.message : t("conversation.errorConnect"));
     }
   }
 
@@ -564,7 +600,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       mediaRecorder.start();
       setRecording(true);
     } catch {
-      onError("マイクを利用できませんでした。ブラウザの権限を確認してください。");
+      onError(t("conversation.errorMic"));
     }
   }
 
@@ -578,23 +614,31 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
     return <InterruptedScreen onRetry={manualRetry} onEvaluate={finish} onGoHome={onReset} evaluating={ending} />;
   }
 
-  const statusText = connectionState === "connecting" ? "Connecting..." : recording ? "Recording — tap the mic again to send" : thinking ? "Thinking..." : activeSpeaker ? `${personaFor(activeSpeaker).label} is speaking` : "Your turn";
+  const statusText = connectionState === "connecting"
+    ? t("conversation.statusConnecting")
+    : recording
+      ? t("conversation.statusRecording")
+      : thinking
+        ? t("conversation.statusThinking")
+        : activeSpeaker
+          ? t("conversation.statusSpeaking", { name: personaFor(activeSpeaker).label })
+          : t("conversation.statusYourTurn");
 
   return (
     <section className="flex h-[calc(100vh-15rem)] min-h-[34rem] flex-col">
       <div className="flex items-start justify-between gap-4 border-b border-border pb-4">
         <div>
-          <p className="mb-1 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">Live session</p>
-          <h2 className="font-display max-w-md text-xl font-semibold">{topicPack?.overview ?? "Conversation"}</h2>
+          <p className="mb-1 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">{t("conversation.eyebrow")}</p>
+          <h2 className="font-display max-w-md text-xl font-semibold">{topicPack?.overview ?? t("conversation.fallbackTitle")}</h2>
         </div>
         <button type="button" onClick={finish} disabled={ending} className="shrink-0 rounded-full border border-danger px-4 py-1.5 text-xs font-semibold text-danger transition hover:bg-danger-soft disabled:opacity-60">
-          {ending ? "Ending..." : "End session"}
+          {ending ? t("conversation.ending") : t("conversation.end")}
         </button>
       </div>
 
       <div className="flex flex-col items-center gap-3 border-b border-border py-5">
         <div className="flex items-center gap-6">
-          <StageChip label="You" active={recording || thinking} isUser />
+          <StageChip label={t("conversation.you")} active={recording || thinking} isUser />
           {session.participants.map((name) => (
             <StageChip key={name} label={personaFor(name).label} color={personaFor(name).color} active={activeSpeaker === name} />
           ))}
@@ -604,7 +648,9 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
         </p>
       </div>
 
-      {timeWarning !== null && <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-800">About {Math.ceil(timeWarning / 60)} more minute(s) left in this session.</p>}
+      {timeWarning !== null && (
+        <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-800">{t("conversation.timeWarning", { minutes: Math.ceil(timeWarning / 60) })}</p>
+      )}
 
       <div className="flex-1 space-y-3 overflow-y-auto py-5" aria-live="polite">
         {messages.map((message) => {
@@ -634,7 +680,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
 
       {topicPack && topicPack.user_cheat_sheet.length > 0 && (
         <details className="border-t border-border py-3 text-sm text-muted">
-          <summary className="cursor-pointer font-semibold text-ink">Conversation prompts</summary>
+          <summary className="cursor-pointer font-semibold text-ink">{t("conversation.prompts")}</summary>
           <ul className="mt-2 space-y-1 pl-4">
             {topicPack.user_cheat_sheet.map((hint) => (
               <li key={hint} className="list-disc">
@@ -647,9 +693,9 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
 
       <form onSubmit={sendText} className="flex items-center gap-2 border-t border-border pt-4">
         <button type="button" onClick={() => connection.current?.interrupt()} className="shrink-0 rounded-full border border-accent px-3.5 py-2 text-xs font-semibold text-accent transition hover:bg-accent-soft">
-          Jump in
+          {t("conversation.jumpIn")}
         </button>
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Write what you want to say" aria-label="Message" className={`${inputClass} rounded-full`} />
+        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={t("conversation.placeholder")} aria-label="Message" className={`${inputClass} rounded-full`} />
         <button
           type="button"
           onClick={toggleMicrophone}
@@ -661,7 +707,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
           <MicIcon className="relative h-5 w-5" />
         </button>
         <button type="submit" className="min-h-[44px] shrink-0 rounded-full bg-accent px-5 font-semibold text-white transition hover:bg-accent-dark">
-          Send
+          {t("conversation.send")}
         </button>
       </form>
     </section>
@@ -669,27 +715,28 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
 }
 
 function ReviewScreen({ review, participants, onNewSession }: { review: Review; participants: string[]; onNewSession: () => void }) {
+  const t = useT();
   const minutes = review.duration_seconds != null ? Math.round(review.duration_seconds / 60) : null;
   return (
     <section className="max-w-2xl">
-      <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">Session review</p>
+      <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">{t("review.eyebrow")}</p>
       <div className="mb-1 flex items-baseline gap-2 text-accent">
         <strong className="font-display text-6xl font-semibold leading-none">{review.score_total}</strong>
         <span className="text-sm font-bold">/ 100</span>
       </div>
       <div className="mb-5 flex gap-5 text-sm text-muted">
         <span>
-          Communication <strong className="text-ink">{review.score_communication}</strong>
+          {t("review.communication")} <strong className="text-ink">{review.score_communication}</strong>
         </span>
         <span>
-          Language <strong className="text-ink">{review.score_language}</strong>
+          {t("review.language")} <strong className="text-ink">{review.score_language}</strong>
         </span>
       </div>
       <h2 className="font-display mb-5 max-w-xl text-lg font-medium leading-relaxed">{review.summary}</h2>
 
       {participants.length > 0 && (
         <div className="mb-6 flex flex-wrap items-center gap-2 text-sm text-muted">
-          <span>You talked with</span>
+          <span>{t("review.talkedWith")}</span>
           {participants.map((name) => {
             const persona = personaFor(name);
             return (
@@ -725,24 +772,25 @@ function ReviewScreen({ review, participants, onNewSession }: { review: Review; 
             </article>
           ))
         ) : (
-          <p className="pt-4 text-sm text-muted">今回は文法フィードバックはありません。</p>
+          <p className="pt-4 text-sm text-muted">{t("review.noGrammarFeedback")}</p>
         )}
       </div>
 
       <div className="mb-7 flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">
-        <span>{review.user_utterance_count} of your turns</span>
-        <span>{review.question_count} questions asked</span>
-        {minutes != null && <span>{minutes} min session</span>}
+        <span>{t("review.turns", { count: review.user_utterance_count })}</span>
+        <span>{t("review.questions", { count: review.question_count })}</span>
+        {minutes != null && <span>{t("review.duration", { minutes })}</span>}
       </div>
 
       <button type="button" onClick={onNewSession} className={primaryButtonClass}>
-        Start another session
+        {t("review.newSession")}
       </button>
     </section>
   );
 }
 
 function RecentSessionsScreen({ token }: { token: string }) {
+  const t = useT();
   const [entries, setEntries] = useState<{ id: string; status: SessionStatus | null }[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -783,7 +831,7 @@ function RecentSessionsScreen({ token }: { token: string }) {
         const fetchedReview = await api.review(sessionId, token);
         setReviews((current) => ({ ...current, [sessionId]: fetchedReview }));
       } catch (reason) {
-        setLoadError(reason instanceof Error ? reason.message : "復習データを取得できませんでした。");
+        setLoadError(reason instanceof Error ? reason.message : t("recentSessions.errorLoad"));
       }
     }
   }
@@ -792,16 +840,16 @@ function RecentSessionsScreen({ token }: { token: string }) {
 
   return (
     <section className="max-w-2xl">
-      <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">Recent sessions</p>
-      <h2 className="font-display mb-6 text-2xl font-medium">直近の会話を振り返る</h2>
+      <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-accent">{t("app.recentSessions")}</p>
+      <h2 className="font-display mb-6 text-2xl font-medium">{t("recentSessions.title")}</h2>
       {loadError && <p className="mb-4 text-sm text-danger">{loadError}</p>}
-      {!loading && viewable.length === 0 && <p className="text-sm text-muted">このブラウザで復習できるセッションはまだありません。</p>}
+      {!loading && viewable.length === 0 && <p className="text-sm text-muted">{t("recentSessions.empty")}</p>}
       <ul className="space-y-2.5">
         {viewable.map((entry) => (
           <li key={entry.id} className="rounded-lg border border-border bg-white">
             <button type="button" onClick={() => toggle(entry.id)} className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold">
-              <span>Session {entry.id.slice(0, 8)}</span>
-              <span className="text-xs font-normal text-muted">{expanded === entry.id ? "閉じる" : "見る"}</span>
+              <span>{t("recentSessions.sessionLabel", { id: entry.id.slice(0, 8) })}</span>
+              <span className="text-xs font-normal text-muted">{expanded === entry.id ? t("recentSessions.close") : t("recentSessions.open")}</span>
             </button>
             {expanded === entry.id && reviews[entry.id] && (
               <div className="border-t border-border px-4 py-3 text-sm">

@@ -7,6 +7,7 @@
 const AUTH_KEY = "rc.auth";
 const ACTIVE_SESSION_KEY = "rc.active_session";
 const RECENT_SESSIONS_KEY = "rc.recent_sessions";
+const LOCALE_KEY = "rc.locale";
 const MAX_RECENT_SESSIONS = 20;
 
 export type StoredAuth = { token: string; expiresAt: string };
@@ -44,6 +45,15 @@ export const activeSessionStorage = {
   },
   clear(): void {
     sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+  },
+};
+
+export const localeStorage = {
+  get(): string | null {
+    return localStorage.getItem(LOCALE_KEY);
+  },
+  set(locale: string): void {
+    localStorage.setItem(LOCALE_KEY, locale);
   },
 };
 
