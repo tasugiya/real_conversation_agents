@@ -1,15 +1,21 @@
-"""Local ADK runner for the live conversation (PoC / Phase-1).
+"""Local ADK runner for the live conversation.
 
-Phase 1 (current): InMemorySessionService — validates that Cloud Run + ADK +
-Gemini Live API can exchange audio/text end-to-end. Session state is
-in-process only; Firestore remains the SoT for conversation logs and reviews.
-Known limitation: sessions are not shared across Cloud Run instances (single
-instance PoC is fine, scale via Cloud Run min-instances=1 for demo).
+Session storage: VertexAiSessionService, backed by the Vertex AI Agent
+Engine Sessions API against the existing AGENT_ENGINE_RESOURCE_NAME
+reasoningEngine resource. Replaced InMemorySessionService (used until
+2026-07-12) after it caused unbounded memory growth in Cloud Run --
+delete_session() was never called anywhere, so every created session and
+its full event history (including audio) lived in process memory forever.
+InMemorySessionService also can't be shared across Cloud Run instances
+(sessionAffinity is off here), so a reconnect landing on a different
+instance would silently lose the session. VertexAiSessionService persists
+server-side and fixes both. Firestore remains the SoT for conversation
+logs and reviews; this is only ADK's own turn/state bookkeeping.
 
-Phase 2 (future): Replace InMemorySessionService with VertexAiSessionService
-so sessions survive restarts and scale across instances.
-
-Why not Agent Engine bidi streaming (original approach):
+LLM execution / audio streaming still runs locally in this process via
+Runner.run_live() -- only session *storage* moved to Vertex AI. This is
+unrelated to Agent Engine's bidi-streaming *compute* path (deploying the
+agent itself to run on Agent Engine), which remains abandoned:
   vertexai 1.160.0 / google-genai 2.11.0 — _wrap_bidi_stream_query_operation
   raises NotImplementedError; client.aio.live.agent_engines does not exist yet
   in the installed genai SDK. See TODO.md BUG-002.
@@ -28,7 +34,7 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
 from google.adk.models import Gemini
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import VertexAiSessionService
 from google.genai import types
 
 from ..config import get_settings
@@ -36,6 +42,26 @@ from ..config import get_settings
 MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 
 _APP_NAME = "real-conv"
+
+# Server-side storage TTL for Vertex AI sessions -- a cleanup safety net,
+# deliberately decoupled from session_max_duration_seconds (which controls
+# conversation length, not how long the storage record should live).
+# 24h is the platform minimum (Vertex AI rejects anything shorter with
+# INVALID_ARGUMENT: "ttl must be at least 24 hours" -- confirmed against the
+# real API); it also matches this codebase's existing 24h TTL convention for
+# Firestore records (firestore_client.py's TTL_HOURS).
+_SESSION_TTL = "86400s"
+
+
+def _extract_reasoning_engine_id(resource_name: str) -> str:
+    """'projects/P/locations/L/reasoningEngines/123' -> '123'.
+
+    VertexAiSessionService's agent_engine_id is used verbatim (unvalidated)
+    to build the API path, so passing the full resource name here would
+    produce a malformed URL -- it must be just the trailing numeric id.
+    """
+    return resource_name.rsplit("/", 1)[-1]
+
 
 ROOT_INSTRUCTION = """
 You are running a small group English conversation practice session with a
@@ -85,7 +111,6 @@ class AgentEvent:
 # Singleton runner
 # ---------------------------------------------------------------------------
 
-_session_service = InMemorySessionService()
 _runner: Runner | None = None
 
 
@@ -93,6 +118,11 @@ def _get_runner() -> Runner:
     global _runner
     if _runner is None:
         settings = get_settings()
+        session_service = VertexAiSessionService(
+            project=settings.gcp_project_id,
+            location=settings.gcp_region,
+            agent_engine_id=_extract_reasoning_engine_id(settings.agent_engine_resource_name),
+        )
         # ADK builds its own google-genai Client internally (google_llm.py's
         # api_client/_live_api_client) and does NOT read vertexai.init()'s
         # global state -- that only affects the older vertexai.generative_models
@@ -118,7 +148,7 @@ def _get_runner() -> Runner:
         _runner = Runner(
             app_name=_APP_NAME,
             agent=agent,
-            session_service=_session_service,
+            session_service=session_service,
         )
     return _runner
 
@@ -133,6 +163,7 @@ async def create_agent_session(user_id: str) -> str:
     session = await runner.session_service.create_session(
         app_name=_APP_NAME,
         user_id=user_id,
+        ttl=_SESSION_TTL,
     )
     return session.id if hasattr(session, "id") else str(session)
 
