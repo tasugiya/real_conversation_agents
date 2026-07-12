@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from ..config import get_settings
 from ..middleware.app_check import require_app_check
 from ..middleware.auth import issue_stream_ticket, require_access_token
-from ..middleware.rate_limit import enforce_rate_limit
+from ..middleware.rate_limit import rate_limiter
 from ..schemas.session import (
     CreateSessionRequest,
     CreateSessionResponse,
@@ -42,7 +42,7 @@ _STALE_GRACE_SECONDS = 120
     "",
     response_model=CreateSessionResponse,
     dependencies=[
-        Depends(enforce_rate_limit),
+        Depends(rate_limiter("session_setup")),
         Depends(require_access_token),
         Depends(require_app_check),
     ],
@@ -113,7 +113,7 @@ async def get_session(session_id: str) -> SessionStatusResponse:
 @router.post(
     "/{session_id}/stream-ticket",
     response_model=StreamTicketResponse,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("stream_ticket")), Depends(require_access_token)],
 )
 async def create_stream_ticket(session_id: str) -> StreamTicketResponse:
     doc = firestore_client.get_document(SESSIONS_COLLECTION, session_id)
@@ -126,7 +126,7 @@ async def create_stream_ticket(session_id: str) -> StreamTicketResponse:
 @router.post(
     "/{session_id}/end",
     response_model=ReviewResponse,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("review")), Depends(require_access_token)],
 )
 async def end_session(session_id: str) -> ReviewResponse:
     doc = firestore_client.get_document(SESSIONS_COLLECTION, session_id)
@@ -202,7 +202,7 @@ async def get_review(session_id: str) -> ReviewResponse:
 @router.post(
     "/{session_id}/review/retry",
     response_model=ReviewResponse,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("review")), Depends(require_access_token)],
 )
 async def retry_review(session_id: str) -> ReviewResponse:
     """Re-generate a review for a completed session. Limited to 3 retries."""

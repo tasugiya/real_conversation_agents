@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from ..middleware.app_check import require_app_check
 from ..middleware.auth import require_access_token
 from ..middleware.cloud_tasks_auth import require_cloud_tasks_oidc
-from ..middleware.rate_limit import enforce_rate_limit
+from ..middleware.rate_limit import rate_limiter
 from ..schemas.topic_pack import (
     CreateTopicPackAcceptedResponse,
     CreateTopicPackRequest,
@@ -30,7 +30,7 @@ router = APIRouter(tags=["topic-packs"])
     response_model=CreateTopicPackAcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(enforce_rate_limit),
+        Depends(rate_limiter("topic_packs")),
         Depends(require_access_token),
         Depends(require_app_check),
     ],
@@ -66,7 +66,7 @@ async def create_topic_pack(
 @router.get(
     "/v1/topic-packs/{topic_pack_id}",
     response_model=TopicPack,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("topic_packs")), Depends(require_access_token)],
 )
 async def get_topic_pack(topic_pack_id: str) -> TopicPack:
     doc = firestore_client.get_document(TOPIC_PACKS_COLLECTION, topic_pack_id)

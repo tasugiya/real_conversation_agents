@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..config import get_settings
 from ..middleware.auth import require_access_token
-from ..middleware.rate_limit import enforce_rate_limit
+from ..middleware.rate_limit import rate_limiter
 from ..schemas.topic_pack import Topic, TopicsResponse
 from ..services import x_client
 
@@ -36,7 +36,7 @@ _MAX_X_TRENDS = 5
 @router.get(
     "/topics",
     response_model=TopicsResponse,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("topics")), Depends(require_access_token)],
 )
 async def list_topics(
     region: str = Query(default="japan", description="X Trends region: japan | tokyo | worldwide"),

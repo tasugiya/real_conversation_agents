@@ -4,13 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..middleware.app_check import require_app_check
 from ..middleware.auth import issue_access_token, verify_password
-from ..middleware.rate_limit import enforce_rate_limit
+from ..middleware.rate_limit import rate_limiter
 from ..schemas.session import AuthRequest, AuthResponse
 
 router = APIRouter(prefix="/v1", tags=["auth"])
 
 
-@router.post("/auth", response_model=AuthResponse, dependencies=[Depends(enforce_rate_limit), Depends(require_app_check)])
+@router.post("/auth", response_model=AuthResponse, dependencies=[Depends(rate_limiter("auth")), Depends(require_app_check)])
 async def login(body: AuthRequest) -> AuthResponse:
     if not verify_password(body.username, body.password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
