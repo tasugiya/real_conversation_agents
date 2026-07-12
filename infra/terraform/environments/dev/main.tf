@@ -71,6 +71,8 @@ module "cloud_run_api" {
   service_account_email = module.iam.api_sa_email
   min_instance_count    = var.cloud_run_min_instances
   max_instance_count    = var.cloud_run_max_instances
+  memory                = var.cloud_run_memory
+  cpu                   = var.cloud_run_cpu
   concurrency           = var.cloud_run_concurrency
   timeout_seconds       = var.cloud_run_timeout_seconds
   allow_unauthenticated = var.cloud_run_allow_unauthenticated

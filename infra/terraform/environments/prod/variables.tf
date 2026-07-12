@@ -50,7 +50,17 @@ variable "cloud_run_min_instances" {
 
 variable "cloud_run_max_instances" {
   type    = number
-  default = 4
+  default = 5
+}
+
+variable "cloud_run_memory" {
+  type    = string
+  default = "8Gi"
+}
+
+variable "cloud_run_cpu" {
+  type    = string
+  default = "2"
 }
 
 variable "cloud_run_concurrency" {
