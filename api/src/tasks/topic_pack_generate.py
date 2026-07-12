@@ -15,7 +15,6 @@ can still start.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -149,28 +148,12 @@ def _generate_with_gemini(topic: str) -> TopicPackOutput:
         config=genai_types.GenerateContentConfig(
             tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
             temperature=0.3,
+            response_mime_type="application/json",
+            response_schema=TopicPackOutput,
         ),
     )
 
-    # Extract JSON from response text (may be wrapped in markdown code fence)
-    text = response.text.strip()
-    if text.startswith("```"):
-        # Strip ```json ... ``` wrapper if present
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-    raw = json.loads(text)
-
-    # Normalise persona_hooks which may arrive as dict or nested object
-    hooks_raw = raw.get("persona_hooks", {})
-    if not isinstance(hooks_raw, dict):
-        hooks_raw = {}
-    raw["persona_hooks"] = PersonaHooks(
-        alice=hooks_raw.get("alice", "curious about how this affects daily life"),
-        bob=hooks_raw.get("bob", "interested in a different perspective"),
-    )
-
-    return TopicPackOutput.model_validate(raw)
+    return TopicPackOutput.model_validate_json(response.text)
 
 
 def _fallback_pack(topic: str) -> TopicPackOutput:
