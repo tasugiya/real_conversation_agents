@@ -60,6 +60,25 @@ class _SessionOver(Exception):
     """Raised by the ender() task to terminate the TaskGroup cleanly."""
 
 
+def _finalize_session_update(
+    current_status: str | None, graceful_end: bool, sequence: int
+) -> dict:
+    """Decide what the WS finally-block should write to the session doc.
+
+    Always persists last_sequence (for reconnects). Only additionally frees
+    the concurrency slot (status -> "abandoned") when the disconnect was an
+    intentional end (time limit / client request / rate limit) AND the
+    session is still "created" -- never on a bare disconnect (so a dropped
+    connection can still reconnect) and never over an in-flight "ending"
+    (a POST .../end call owns that transition).
+    """
+    update: dict = {"last_sequence": sequence}
+    if graceful_end and current_status == "created":
+        update["status"] = "abandoned"
+        update["ended_at"] = datetime.now(timezone.utc)
+    return update
+
+
 def _build_session_context(
     tp: dict | None,
     participant_personalities: dict[str, str],
@@ -145,7 +164,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    if doc.get("status") in ("completed", "ending"):
+    if doc.get("status") in ("completed", "ending", "abandoned"):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -172,6 +191,10 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
     sequence = last_sequence  # resume from where we left off
     ai_consecutive_turns = 0
     session_over = asyncio.Event()  # set to terminate all tasks cleanly
+    # Set only on intentional-end paths (time limit / client request / rate
+    # limit) -- NOT on bare disconnects, so a dropped connection can still
+    # reconnect (see finally block below for why this distinction matters).
+    graceful_end = False
 
     async def send_event(event_type: str, **payload: object) -> None:
         nonlocal sequence
@@ -208,6 +231,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
     async def upstream() -> None:
         """Read WebSocket frames and forward to the agent."""
+        nonlocal graceful_end
         msg_count = 0
         window_start = asyncio.get_event_loop().time()
 
@@ -225,6 +249,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
             if msg_count > _MAX_MSGS_PER_MIN:
                 logger.warning("ws.rate_limit session_id=%s", session_id)
                 await send_event("system.error", message="message rate limit exceeded")
+                graceful_end = True
                 session_over.set()
                 return
 
@@ -296,6 +321,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
     async def session_timer() -> None:
         """Send time_warning at 80% mark; set session_over at the limit."""
+        nonlocal graceful_end
         await asyncio.sleep(warn_secs)
         try:
             await send_event(
@@ -309,6 +335,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
             await send_event("session.time_limit")
         except Exception:  # noqa: BLE001
             pass
+        graceful_end = True
         session_over.set()
 
     async def ender() -> None:
@@ -317,6 +344,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         raise _SessionOver()
 
     async def _handle_client_event(data: dict) -> None:
+        nonlocal graceful_end
         event_type = data.get("type")
 
         if event_type == "ping":
@@ -340,6 +368,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         elif event_type == "session.end.request":
             # Client requested graceful end — let ender() clean up
             await send_event("session.ending")
+            graceful_end = True
             session_over.set()
 
         elif event_type == "client.resume":
@@ -380,8 +409,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         try:
             current = firestore_client.get_document(SESSIONS_COLLECTION, session_id)
             if current and current.get("status") not in ("completed", "ending"):
-                firestore_client.update_document(
-                    SESSIONS_COLLECTION, session_id, {"last_sequence": sequence}
-                )
+                update = _finalize_session_update(current.get("status"), graceful_end, sequence)
+                firestore_client.update_document(SESSIONS_COLLECTION, session_id, update)
         except Exception:  # noqa: BLE001
             pass

@@ -32,6 +32,11 @@ SESSIONS_COLLECTION = "sessions"
 SESSION_MESSAGES_COLLECTION = "session_messages"
 REVIEWS_COLLECTION = "reviews"
 
+# Extra buffer added on top of session_max_duration_seconds before a
+# created/ending session is considered stale (network delays, review
+# generation taking a moment, etc.).
+_STALE_GRACE_SECONDS = 120
+
 
 @router.post(
     "",
@@ -45,12 +50,14 @@ REVIEWS_COLLECTION = "reviews"
 async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
     # Enforce concurrent session limit (P1)
     settings = get_settings()
-    active = list(
+    raw = list(
         firestore_client.get_client()
         .collection(SESSIONS_COLLECTION)
         .where("status", "in", ["created", "ending"])
         .stream()
     )
+    active, stale = _filter_stale_sessions(raw)
+    _mark_stale_sessions_abandoned(stale)
     if len(active) >= settings.max_concurrent_sessions:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -247,6 +254,40 @@ async def retry_review(session_id: str) -> ReviewResponse:
         conversation_feedback=result.conversation_feedback,
         grammar_feedback=grammar_feedback,
     )
+
+
+def _filter_stale_sessions(docs: list) -> tuple[list, list]:
+    """Split created/ending session docs into (still-active, stale) by age.
+
+    A session whose started_at is older than session_max_duration_seconds +
+    _STALE_GRACE_SECONDS is treated as abandoned (the client disconnected or
+    crashed without ever calling POST .../end) rather than counted against
+    max_concurrent_sessions. Docs with no started_at are kept active (fail
+    safe -- never staleness-evict something we can't age-check).
+    """
+    settings = get_settings()
+    threshold = timedelta(seconds=settings.session_max_duration_seconds + _STALE_GRACE_SECONDS)
+    now = datetime.now(timezone.utc)
+    active, stale = [], []
+    for d in docs:
+        started_at = d.to_dict().get("started_at")
+        (stale if started_at and (now - started_at) > threshold else active).append(d)
+    return active, stale
+
+
+def _mark_stale_sessions_abandoned(stale_docs: list) -> None:
+    """Best-effort: free up stale sessions' concurrency slot for good so future
+    create_session calls don't need to re-filter them every time. Never raises
+    -- a failure here must not block the session creation that triggered it.
+    """
+    now = datetime.now(timezone.utc)
+    for d in stale_docs:
+        try:
+            firestore_client.update_document(
+                SESSIONS_COLLECTION, d.id, {"status": "abandoned", "ended_at": now}
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _load_transcript(session_id: str) -> list[dict]:
