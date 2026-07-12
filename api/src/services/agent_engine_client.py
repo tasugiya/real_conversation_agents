@@ -38,6 +38,7 @@ from google.adk.sessions import VertexAiSessionService
 from google.genai import types
 
 from ..config import get_settings
+from .personas import PERSONA_POOL
 
 MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 
@@ -65,29 +66,28 @@ def _extract_reasoning_engine_id(resource_name: str) -> str:
 
 ROOT_INSTRUCTION = """
 You are running a small group English conversation practice session with a
-human user. You play two AI characters yourself:
-
-- Alice: warm, casual, asks a lot of follow-up questions.
-- Bob: a bit more skeptical, offers gentle counterpoints, calm tone.
+human user. You play the AI characters listed in the SESSION BRIEFING below.
 
 Rules:
-1. Only one character speaks per turn. Never speak as both in the same turn.
+1. Only one character speaks per turn. Never speak as more than one
+   character in the same turn.
 2. Start every spoken turn with the character's name and a colon, for
    example "Alice: That's interesting, what do you think?". Always include
    this even when speaking aloud -- the application uses it to identify the
    current speaker.
 3. Never speak while the user is still talking.
 4. After the user finishes speaking, wait briefly, then have exactly one
-   character respond. Occasionally let the other character add one short
-   remark, but do not have both characters talk back-to-back more than once
+   character respond. Occasionally let another character add one short
+   remark, but do not have characters talk back-to-back more than once
    before returning the floor to the user.
 5. Ask the user a question at least every few turns so they stay involved.
 6. Keep each turn short: one to three sentences.
-7. If you receive a message starting with "=== CONVERSATION TOPIC CONTEXT ===",
-   read it silently as your briefing — do NOT read it aloud or acknowledge it.
-   Use the topic, facts, and conversation beats to guide the discussion naturally.
-8. Only state something as a fact if it appears in your topic context briefing;
-   for everything else, frame it as an opinion ("I think...", "I heard that...").
+7. If you receive a message starting with "=== SESSION BRIEFING ===" or
+   "=== CONVERSATION HISTORY ===", read it silently as your briefing --
+   do NOT read it aloud or acknowledge it. Use the topic, facts, and persona
+   descriptions to guide the discussion naturally.
+8. Only state something as a fact if it appears in your briefing; for
+   everything else, frame it as an opinion ("I think...", "I heard that...").
 9. Speak in English at a level a language learner can follow (B1-B2 level).
 """
 
@@ -228,6 +228,11 @@ class AgentLiveSession:
             # way to get a text transcript alongside AUDIO playback.
             response_modalities=[types.Modality.AUDIO],
             output_audio_transcription=types.AudioTranscriptionConfig(),
+            # Without this, raw.input_transcription is never populated, so
+            # input_transcript_final never fires and the user's spoken turns
+            # never get saved to session_messages (BUG-024) -- Review
+            # transcripts would only ever contain the AI's side.
+            input_audio_transcription=types.AudioTranscriptionConfig(),
         )
         # Stateful speaker tracking: "Alice:" label only appears in the first
         # delta of a turn; subsequent deltas must inherit it (BUG-005 fix).
@@ -239,11 +244,17 @@ class AgentLiveSession:
             run_config=run_config,
         ):
             for evt in _normalize_event(raw_event, current_speaker):
-                # Update carry-over speaker from the first delta that has one
-                if evt.type in ("text_delta", "audio_chunk") and evt.speaker_id:
+                # Update carry-over speaker from the first event that has one
+                # (text_final included -- previously omitted, so a
+                # successfully-labeled output_transcription never corrected
+                # a bad guess made by an earlier audio_chunk in the same turn).
+                if evt.type in ("text_delta", "audio_chunk", "text_final") and evt.speaker_id:
                     current_speaker = evt.speaker_id
-                elif evt.type == "turn_complete":
-                    current_speaker = None
+                # Deliberately NOT reset on turn_complete: the next turn's
+                # first audio_chunk arrives before its transcription is
+                # available, so it would otherwise fall back to raw.author
+                # ("conversation_agent", BUG-019) instead of at worst
+                # showing the previous turn's speaker for a moment.
                 yield evt
 
     async def close(self) -> None:
@@ -256,7 +267,12 @@ class AgentLiveSession:
 # Event normalizer
 # ---------------------------------------------------------------------------
 
-_KNOWN_PERSONAS = frozenset(("alice", "bob"))
+# Derived from the full pool, not hardcoded to alice/bob (BUG-019 fix):
+# select_personas() can pick any subset of PERSONA_POOL per session, so a
+# session with e.g. emma/david previously had no way for the model's
+# correctly-labeled "Emma:" turns to be recognized here -- they always fell
+# through to raw.author ("conversation_agent").
+_KNOWN_PERSONAS = frozenset(p.name for p in PERSONA_POOL)
 
 
 def _extract_speaker_from_text(text: str) -> tuple[str | None, str]:

@@ -49,6 +49,20 @@ class TestExtractSpeakerFromText:
         # text is returned unchanged because the label was not recognized
         assert "Charlie" in text
 
+    @pytest.mark.parametrize("name", ["Emma", "David", "Mia"])
+    def test_full_persona_pool_recognized(self, name):
+        # Regression guard for BUG-019: _KNOWN_PERSONAS previously hardcoded
+        # only alice/bob, so any session where select_personas() picked a
+        # different pair (e.g. emma/david) always fell through to
+        # raw.author ("conversation_agent") even when the model correctly
+        # labeled its turn.
+        speaker, text = _extract_speaker_from_text(f"{name}: Nice to meet you.")
+        assert speaker == name.lower()
+        assert text == "Nice to meet you."
+
+    def test_known_personas_matches_full_pool(self):
+        assert _KNOWN_PERSONAS == {"alice", "bob", "emma", "david", "mia"}
+
     def test_colon_in_middle_of_sentence(self):
         # Colon is not at a persona label position
         speaker, text = _extract_speaker_from_text("Here is a list: items")
