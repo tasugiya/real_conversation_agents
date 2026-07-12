@@ -4,7 +4,7 @@
 
 この文書は、リアルな複数人会話トレーニングエージェントにおけるユーザー体験を、バックエンドとAgent設計へ落とし込むための初期設計メモである。
 
-前回の「ドラフトのドラフト」に、`docs/backend/MEMO.md` と `docs/backend/RESEARCH.md` の内容を反映し、MVPで優先する体験、仮決定事項、未決定事項を更新する。
+前回の「ドラフトのドラフト」に、`docs/backend/MEMO.md` と `docs/backend/RESEARCH.md` の内容を反映し、MVPで優先する体験、現行実装に合わせた共有password認証、会話履歴の扱い、仮決定事項、未決定事項を更新する。
 
 関連文書:
 
@@ -37,7 +37,7 @@
 
 ```mermaid
 flowchart TD
-    A[アプリを開く] --> B[簡易password認証]
+    A[アプリを開く] --> B[共有username/password認証]
     B --> C[メニュー画面]
     C -->|会話する| D[トピック候補を見る]
     C -->|復習する| R1[TTL内の過去セッション一覧]
@@ -50,7 +50,7 @@ flowchart TD
     H --> I[会話セッション開始]
     I --> J[AI同士またはAIから導入]
     J --> K[ユーザーがpush-to-talkで発話]
-    K --> L[Directorが次話者を決定]
+    K --> L[Turn Controllerが次話者を決定]
     L --> M[Personaが音声/字幕で応答]
     M --> N{終了条件?}
     N -->|No| K
@@ -65,9 +65,10 @@ flowchart TD
 
 | 項目 | 仮決定していること | これから決めること |
 |---|---|---|
-| 入口 | 会話セッション開始と、TTL内の復習を選べる。 | password認証前後の画面順序。 |
-| 復習 | 保存期間内のセッションは復習画面と会話ログを確認できる。 | セッション一覧に表示する情報、復習可能期限の表示。 |
-| ログイン | ユーザーアカウント管理はMVPでは避ける。 | Xの個人認証が本当に必要か。現時点ではアプリBearer Token利用を優先。 |
+| 入口 | 最初に共有username/passwordの認証画面を挟み、成功後に短期access tokenを保持する。 | 認証画面の文言、失敗時の案内、token期限切れ時の戻し先。 |
+| 復習 | 保存期間内のセッションは復習画面と会話ログを確認できる。復習APIも短期access tokenで保護する。 | セッション一覧に表示する情報、復習可能期限の表示、token期限切れ時の扱い。 |
+| ユーザー識別 | ユーザーアカウント、個人別password、OAuthは持たない。共有passwordはアプリ全体の入口制限であり、個人識別には使わない。 | 共有passwordをデモ参加者へどう配布・ローテーションするか。 |
+| 会話session | 会話開始時に推測困難な `session_id` を作る。これはユーザー認証tokenではなく、会話と復習データを短期的に参照するためのIDである。 | 復習一覧をtoken保持中の画面状態で扱うか、ブラウザlocal stateにも残すか。 |
 
 ### 4.2 トピック選択
 
@@ -98,7 +99,7 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 |---|---|---|
 | 生成タイミング | 会話開始前の同期処理。Frontendはローディング表示する。 | 許容待ち時間、キャッシュ再利用条件。 |
 | 調査方法 | X API + Gemini Interactions APIのGoogle Search Grounding / URL Contextを使う案。 | 実APIでの実装可否、利用quota、リージョン。 |
-| 台本との違い | `conversation_beats`は固定台本ではなく、ユーザー未介入時の柔軟な進行目標。 | beatsをスコアや制限時間にどう使うか。 |
+| 台本との違い | `conversation_beats`は固定台本ではなく、ユーザー未介入時の柔軟な進行目標。会話ログそのものとは別に扱う。 | beatsをスコアや制限時間にどう使うか。 |
 
 ### 4.4 セッション設定
 
@@ -118,6 +119,7 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | ユーザー発話 | push-to-talkで発話開始/終了を明示する。 | ボタンUI、キーボード入力時の状態管理。 |
 | barge-in | ユーザーが音声ボタンを押したらAI再生bufferを破棄し、interruptを送る。 | Live APIのinterrupt応答とUI状態の同期。 |
 | ステージ制 | ユーザーが介入しない場合の会話beatsを制限時間のように扱う。 | 時間延長条件、絶対最大時間、終了演出。 |
+| 会話履歴 | ユーザーとAIの確定発話を会話ログとして保持し、Agentの文脈共有・再接続・復習に使う。 | partial字幕、interrupted発話、要約済み履歴をUIにどこまで見せるか。 |
 | ヒント | チートシート、話題ヒント、便利フレーズ、助け舟を用意する。 | ヒント利用をスコアへ影響させるか。 |
 | エラー | 継続困難な場合はセッション中断画面へ遷移する。 | 再開、途中終了、ホームへ戻る導線。 |
 
@@ -128,7 +130,7 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | スコア | 会話終了時に総合スコアを表示する。 | 点数の軸、重み、UI表現。 |
 | 会話評価 | 質問への回答、相手への関心、話題展開への貢献などを見る。 | 会話品質評価のJSON schema。 |
 | 語学評価 | 文法、自然な表現、語彙、言い回しを提示する。 | 日本語説明/英語説明の切り替え。 |
-| 会話ログ | 復習画面で確認できる。 | 音声は保存せず、テキストログ中心にする。 |
+| 会話ログ | 復習画面で確定発話のテキストログを確認できる。 | 音声は保存せず、text中心にする。interrupted発話の見せ方を決める。 |
 | 保存期間 | セッション終了後24hを基本にする。 | UI表示上の期限、TTL削除遅延への対応。 |
 
 ## 5. バックエンドに影響する体験要求
@@ -140,6 +142,8 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | 1本の自然な会話として扱いたい | Realtime経路はWebSocketに統一し、音声binaryとJSON eventを流す。 |
 | 話者と音声を区別したい | Personaごとのvoice設定、speaker event、subtitle同期が必要。 |
 | ユーザーがAIを遮れるようにしたい | push-to-talk開始時にinterrupt、再生buffer破棄、Agent側interrupt処理が必要。 |
+| デモ公開時の入口を制限したい | ユーザーアカウントは作らず、共有username/password、短期access token、stream ticket、rate limitで保護する。 |
+| 会話内容を踏まえて返答してほしい | `conversation_beats`とは別に、確定発話履歴、会話状態、必要に応じた要約を保持する。 |
 | スコアと復習を出したい | 会話中の軽量指標、終了後Review Agent、Firestore保存が必要。 |
 | TTL内で復習したい | session一覧、review取得、`expires_at`による表示可否判定が必要。 |
 
@@ -149,14 +153,14 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 
 | 状態 | 説明 |
 |---|---|
-| unauthenticated | password未認証。 |
-| authenticated | 短期token取得済み。 |
+| unauthenticated | 共有username/password認証前。 |
+| authenticated | 短期access token取得済み。 |
 | menu | 会話開始または復習選択。 |
 | topic_loading | トピック候補取得中。 |
 | topic_pack_generating | Topic Pack生成中。 |
 | configuring_session | 会話言語、人数、入出力モード確認中。 |
 | permission_required | マイク権限確認中。 |
-| setup_error | 認証、トピック、権限、API失敗。 |
+| setup_error | 認証、トピック取得、Topic Pack生成、権限、API失敗。 |
 
 ### 6.2 Conversation
 
@@ -169,6 +173,7 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | agent_speaking | Persona発話中。 |
 | interrupted | ユーザー割り込みによりAI発話停止。 |
 | hint_available | ヒント表示可能。 |
+| reconnecting | WebSocket切断後、同じsessionへ再接続中。 |
 | ending | セッション終了処理中。 |
 | suspended | 継続困難なエラーで中断画面表示。 |
 
@@ -190,7 +195,8 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | 音声保存 | 永続保存しない。 | プライバシーと実装負荷を抑える。 |
 | 会話中評価 | 詳細LLM評価はしない。軽量メトリクスだけ更新する。 | 応答遅延を避ける。 |
 | Review生成 | `POST /sessions/{id}/end`の同期処理にする。 | Worker / Cloud Tasksを使わない方針と整合。 |
-| X個人認証 | MVPでは使わず、アプリBearer Token + 地域トレンドを優先する。 | ログイン実装を避ける。 |
+| X連携 | ユーザーのXアカウント接続は使わず、サーバー側のX API Bearer Token + 地域トレンドを優先する。 | 個人OAuthを増やさず、共有認証の範囲に収めるため。 |
+| 会話履歴 | 確定発話テキストを保存し、生音声は保存しない。 | 復習とAgent文脈に必要な最小データへ絞るため。 |
 
 ## 8. 未決定事項
 
@@ -204,6 +210,9 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 | TBD-UX-006 | セッション制限時間 | トークンコスト、会話体験、ステージ感。 |
 | TBD-UX-007 | 中断画面の導線 | 再接続、途中終了、Review生成、ホーム復帰。 |
 | TBD-UX-008 | Persona情報の事前開示範囲 | 初対面感と安心感のバランス。 |
+| TBD-UX-009 | 共有認証下での復習導線 | token保持中の画面状態、同一ブラウザ内の履歴、session URL、復習期限表示のどれを採用するか。 |
+| TBD-UX-010 | token期限切れ時の復習導線 | 再認証後に同じreviewへ戻せるようにするか、メニューへ戻すか。 |
+| TBD-UX-011 | interrupted発話のログ表示 | 生成途中のAI発話を復習画面でどう表現するか。 |
 
 ## 9. 次に決めること
 
@@ -212,3 +221,4 @@ Topic Packは、選択されたトピックを会話セッションで使える�
 3. スコアの軸を、会話参加・会話展開・語学面に分けて定義する。
 4. セッション中断画面の状態遷移をFrontend/Backendで揃える。
 5. 復習一覧と復習画面で必要なFirestoreデータを確定する。
+6. 共有認証構成でのaccess token / session_id / stream ticket / local stateの役割を確定する。
