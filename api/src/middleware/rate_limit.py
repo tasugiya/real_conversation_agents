@@ -41,3 +41,10 @@ async def enforce_rate_limit(request: Request) -> None:
 
     hits.append(now)
     _hits[client_ip] = hits
+
+    # Evict stale IPs periodically to prevent unbounded growth (BUG-009 fix).
+    # One-in-100 chance per request keeps amortized cost negligible.
+    if len(_hits) > 1000 and (int(now) % 100 == 0):
+        stale = [ip for ip, ts in _hits.items() if not any(t > window_start for t in ts)]
+        for ip in stale:
+            del _hits[ip]

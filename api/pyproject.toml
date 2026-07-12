@@ -16,6 +16,10 @@ dependencies = [
   "firebase-admin>=6.5",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+
 [tool.ruff]
 line-length = 100
 

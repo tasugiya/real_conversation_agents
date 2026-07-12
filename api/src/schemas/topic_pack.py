@@ -1,8 +1,4 @@
-"""Topic / Topic Pack models. X API / Search Grounding is not implemented yet --
-these are intentionally the dummy shape from docs/backend/03_AGENT_ORCHESTRATION_DRAFT.md §4.2,
-duplicated here per the "案A" decision: the API's dummy Topic Pack generation
-does not call Agent Engine at all.
-"""
+"""Topic / Topic Pack request/response models."""
 
 from datetime import datetime
 
@@ -20,6 +16,7 @@ class TopicsResponse(BaseModel):
 
 class CreateTopicPackRequest(BaseModel):
     topic_id: str
+    topic_title: str | None = None  # Human-readable title; used as research query
 
 
 class CreateTopicPackAcceptedResponse(BaseModel):

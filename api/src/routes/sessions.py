@@ -1,14 +1,15 @@
-"""POST /v1/sessions, stream-ticket, end, and review retrieval
+"""POST /v1/sessions, stream-ticket, end, review retrieval, and review retry
 (docs/backend/02_BACKEND_PROCESS_DRAFT.md §4.3).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from ..config import get_settings
 from ..middleware.app_check import require_app_check
 from ..middleware.auth import issue_stream_ticket, require_access_token
 from ..middleware.rate_limit import enforce_rate_limit
@@ -23,6 +24,7 @@ from ..schemas.session import (
 from ..services import firestore_client
 from ..services.agent_engine_client import create_agent_session
 from ..services.gemini_client import generate_review
+from ..services.personas import select_personas
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -41,9 +43,26 @@ REVIEWS_COLLECTION = "reviews"
     ],
 )
 async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
+    # Enforce concurrent session limit (P1)
+    settings = get_settings()
+    active = list(
+        firestore_client.get_client()
+        .collection(SESSIONS_COLLECTION)
+        .where("status", "in", ["created", "ending"])
+        .stream()
+    )
+    if len(active) >= settings.max_concurrent_sessions:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="server is at capacity, please try again later",
+        )
+
     session_id = uuid.uuid4().hex
     agent_session_id = await create_agent_session(user_id=session_id)
-    participants = ["alice", "bob"][: max(body.agent_count, 1)]
+
+    selected = select_personas(body.agent_count)
+    participant_names = [p.name for p in selected]
+    participant_personalities = {p.name: p.personality for p in selected}
 
     firestore_client.create_document(
         SESSIONS_COLLECTION,
@@ -54,11 +73,16 @@ async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
             "topic_pack_id": body.topic_pack_id,
             "agent_count": body.agent_count,
             "agent_session_id": agent_session_id,
-            "participants": participants,
+            "participants": participant_names,
+            "participant_personalities": participant_personalities,
             "started_at": datetime.now(timezone.utc),
         },
     )
-    return CreateSessionResponse(session_id=session_id, status="created", participants=participants)
+    return CreateSessionResponse(
+        session_id=session_id,
+        status="created",
+        participants=participant_names,
+    )
 
 
 @router.get(
@@ -102,6 +126,12 @@ async def end_session(session_id: str) -> ReviewResponse:
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
 
+    # Idempotency: return existing review if already completed (BUG-006 fix)
+    if doc.get("status") == "completed":
+        existing_review = firestore_client.get_document(REVIEWS_COLLECTION, session_id)
+        if existing_review is not None:
+            return ReviewResponse(**existing_review)
+
     firestore_client.update_document(SESSIONS_COLLECTION, session_id, {"status": "ending"})
 
     transcript = _load_transcript(session_id)
@@ -110,6 +140,9 @@ async def end_session(session_id: str) -> ReviewResponse:
         GrammarFeedbackItem(**item.model_dump()) for item in result.grammar_feedback
     ]
 
+    now = datetime.now(timezone.utc)
+    metrics = _compute_session_metrics(transcript, doc.get("started_at"), now)
+
     firestore_client.create_document(
         REVIEWS_COLLECTION,
         session_id,
@@ -117,16 +150,33 @@ async def end_session(session_id: str) -> ReviewResponse:
             "session_id": session_id,
             "summary": result.summary,
             "score_total": result.score_total,
+            "score_communication": result.score_communication,
+            "score_language": result.score_language,
+            "conversation_feedback": result.conversation_feedback,
             "grammar_feedback": [item.model_dump() for item in grammar_feedback],
+            **metrics,
         },
     )
-    firestore_client.update_document(SESSIONS_COLLECTION, session_id, {"status": "completed"})
+    # BUG-013 fix: expires_at = ended_at + 24h (not creation time + 24h)
+    firestore_client.update_document(
+        SESSIONS_COLLECTION,
+        session_id,
+        {
+            "status": "completed",
+            "ended_at": now,
+            "expires_at": now + timedelta(hours=24),
+        },
+    )
 
     return ReviewResponse(
         session_id=session_id,
         summary=result.summary,
         score_total=result.score_total,
+        score_communication=result.score_communication,
+        score_language=result.score_language,
+        conversation_feedback=result.conversation_feedback,
         grammar_feedback=grammar_feedback,
+        **metrics,
     )
 
 
@@ -142,6 +192,63 @@ async def get_review(session_id: str) -> ReviewResponse:
     return ReviewResponse(**doc)
 
 
+@router.post(
+    "/{session_id}/review/retry",
+    response_model=ReviewResponse,
+    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+)
+async def retry_review(session_id: str) -> ReviewResponse:
+    """Re-generate a review for a completed session. Limited to 3 retries."""
+    doc = firestore_client.get_document(SESSIONS_COLLECTION, session_id)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    if doc.get("status") != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="session must be completed before retrying review",
+        )
+
+    existing_review = firestore_client.get_document(REVIEWS_COLLECTION, session_id)
+    retry_count: int = (existing_review or {}).get("retry_count", 0)
+    if retry_count >= 3:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="retry limit reached (max 3)",
+        )
+
+    transcript = _load_transcript(session_id)
+    result = generate_review(transcript)
+    grammar_feedback = [
+        GrammarFeedbackItem(**item.model_dump()) for item in result.grammar_feedback
+    ]
+
+    updated = {
+        "summary": result.summary,
+        "score_total": result.score_total,
+        "score_communication": result.score_communication,
+        "score_language": result.score_language,
+        "conversation_feedback": result.conversation_feedback,
+        "grammar_feedback": [item.model_dump() for item in grammar_feedback],
+        "retry_count": retry_count + 1,
+    }
+    if existing_review is None:
+        firestore_client.create_document(
+            REVIEWS_COLLECTION, session_id, {"session_id": session_id, **updated}
+        )
+    else:
+        firestore_client.update_document(REVIEWS_COLLECTION, session_id, updated)
+
+    return ReviewResponse(
+        session_id=session_id,
+        summary=result.summary,
+        score_total=result.score_total,
+        score_communication=result.score_communication,
+        score_language=result.score_language,
+        conversation_feedback=result.conversation_feedback,
+        grammar_feedback=grammar_feedback,
+    )
+
+
 def _load_transcript(session_id: str) -> list[dict]:
     docs = (
         firestore_client.get_client()
@@ -151,3 +258,29 @@ def _load_transcript(session_id: str) -> list[dict]:
         .stream()
     )
     return [d.to_dict() for d in docs]
+
+
+def _compute_session_metrics(
+    transcript: list[dict],
+    started_at: datetime | None,
+    ended_at: datetime | None,
+) -> dict:
+    """Compute objective session metrics from the transcript (Scoring Observer)."""
+    user_msgs = [m for m in transcript if m.get("role") == "user"]
+    ai_msgs = [m for m in transcript if m.get("role") == "assistant"]
+    question_count = sum(
+        1 for m in user_msgs if "?" in m.get("transcript", "")
+    )
+    duration_seconds: int | None = None
+    if started_at and ended_at:
+        try:
+            delta = ended_at - started_at
+            duration_seconds = int(delta.total_seconds())
+        except Exception:
+            pass
+    return {
+        "user_utterance_count": len(user_msgs),
+        "ai_utterance_count": len(ai_msgs),
+        "question_count": question_count,
+        "duration_seconds": duration_seconds,
+    }

@@ -87,14 +87,28 @@ def issue_stream_ticket(session_id: str) -> tuple[str, datetime]:
 
 def consume_stream_ticket(ticket: str, session_id: str) -> bool:
     """One-time use: returns False if missing, already used, expired, or for
-    the wrong session."""
-    doc = firestore_client.get_document(STREAM_TICKETS_COLLECTION, ticket)
-    if doc is None or doc.get("used"):
-        return False
-    if doc.get("session_id") != session_id:
-        return False
-    expires_at_ticket = doc.get("expires_at_ticket")
-    if expires_at_ticket is not None and expires_at_ticket < datetime.now(timezone.utc):
-        return False
-    firestore_client.update_document(STREAM_TICKETS_COLLECTION, ticket, {"used": True})
-    return True
+    the wrong session.
+
+    Uses a Firestore transaction to prevent double-consumption under concurrent
+    reconnect attempts (BUG-008 fix).
+    """
+    from google.cloud import firestore as _firestore
+
+    db = firestore_client.get_client()
+    ticket_ref = db.collection(STREAM_TICKETS_COLLECTION).document(ticket)
+
+    @_firestore.transactional
+    def _run(transaction: _firestore.Transaction) -> bool:
+        snapshot = ticket_ref.get(transaction=transaction)
+        if not snapshot.exists:
+            return False
+        doc = snapshot.to_dict()
+        if doc.get("used") or doc.get("session_id") != session_id:
+            return False
+        expires = doc.get("expires_at_ticket")
+        if expires is not None and expires < datetime.now(timezone.utc):
+            return False
+        transaction.update(ticket_ref, {"used": True})
+        return True
+
+    return _run(db.transaction())
