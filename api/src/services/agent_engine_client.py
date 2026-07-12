@@ -221,7 +221,13 @@ class AgentLiveSession:
         runner = _get_runner()
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
-            response_modalities=[types.Modality.AUDIO, types.Modality.TEXT],
+            # The Live API setup request accepts at most one response
+            # modality; requesting [AUDIO, TEXT] together is rejected with
+            # close code 1007 ("At most one response modality can be
+            # specified..."). output_audio_transcription is the documented
+            # way to get a text transcript alongside AUDIO playback.
+            response_modalities=[types.Modality.AUDIO],
+            output_audio_transcription=types.AudioTranscriptionConfig(),
         )
         # Stateful speaker tracking: "Alice:" label only appears in the first
         # delta of a turn; subsequent deltas must inherit it (BUG-005 fix).
