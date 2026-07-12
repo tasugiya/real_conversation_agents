@@ -4,7 +4,7 @@
 
 この文書は、ADK / Agent Runtime（既存文書でのVertex AI Agent Engine）上で動かすAgent群の構成と連携方法を整理するための初期設計メモである。
 
-`docs/backend/MEMO.md` と `docs/backend/RESEARCH.md` の内容を反映し、Conversation Manager中心の前回案を、Conversation Director、Topic Pack Workflow、Scoring Observer、Hint Generator、Review Agentを含む構成へ更新する。
+`docs/backend/MEMO.md` と `docs/backend/RESEARCH.md` の内容を反映し、Conversation Manager中心の前回案を、Realtime Turn Controller、Conversation Policy Observer、Topic Pack Workflow、Scoring Observer、Hint Generator、Review Agentを含む構成へ更新する。
 
 ## 1. 現時点の大きな方針
 
@@ -14,8 +14,11 @@
 | 開発方式 | Google ADKでAgent、tool、state、Agent間遷移を実装する。 |
 | Realtime方式 | 1会話セッションにつき、1つのAgent Platform Session、1つの`LiveRequestQueue`、1つの`runner.run_live()`、1つのFrontend WebSocket。 |
 | Persona表現 | 複数Persona Agentをsub_agentsとして扱い、Personaごとの`Gemini`インスタンス、`speech_config`、`voice_name`を持たせる。 |
-| Agent状態 | Agent Platform Sessionsが会話文脈・イベント・作業状態のSoT。 |
-| Topic生成 | 会話前に固定順序のTopic Pack Workflowで生成する。自由探索型Research Agentにはしない。 |
+| 会話制御 | FastAPIまたは決定論的WorkflowのRealtime Turn Controllerがfloor control、次話者最終決定、終了条件を担う。 |
+| Agent状態 | Agent Platform SessionsがAgent実行中の会話文脈・イベント・作業状態のSoT。確定発話履歴と復習用データはFirestoreにも保存する。 |
+| 会話履歴 | `conversation_beats`とは別に、確定発話履歴、会話状態、必要に応じた要約を明示的に管理する。 |
+| ユーザー識別 | 共有username/password認証はFastAPI Gatewayで完結する。Agentはユーザーアカウント情報を前提にせず、`session_id`、発話履歴、会話状態だけを扱う。 |
+| Topic生成 | 会話前にFastAPI主導の固定順序Workflowで生成する。自由探索型Research Agentにはしない。 |
 | 会話中評価 | 詳細LLM評価はクリティカルパスに置かず、軽量指標またはObserverに分離する。 |
 | Review | 会話終了後にReview AgentがStructured Outputで生成する。 |
 
@@ -23,9 +26,10 @@
 
 | 名称 | 種別 | クリティカルパス | 主な責務 |
 |---|---|---|---|
-| Topic Pack Workflow | workflow | 会話前 | X API、Web調査、Topic Pack JSON生成。 |
-| Conversation Director | Agent | Yes | 次話者選択、floor control、会話beats管理、ヒント条件、終了条件。 |
+| Topic Pack Workflow | FastAPI主導workflow + Agent/tool | 会話前 | X API、Web調査、Topic Pack JSON生成。 |
+| Realtime Turn Controller | deterministic workflow/code | Yes | floor control、次話者最終決定、AI連続発話制限、barge-in、終了条件。 |
 | Persona Agent A/B/C | Agent | 発話対象のみYes | Persona固有の性格・関心・声で発話する。 |
+| Conversation Policy Observer | Agent/logic | No | 話題位置、停滞、困惑、次ターン候補を非同期に分析する。 |
 | Scoring Observer | Agent/logic | No | 会話中の軽量指標、終了後評価材料の整理。 |
 | Hint Generator | Agent/tool | 要求時のみ | チートシート、話題ヒント、使えるフレーズ、助け舟。 |
 | Review Agent | Agent | 会話終了後 | 文法、自然表現、会話参加度、スコア、サマリー生成。 |
@@ -34,14 +38,15 @@
 
 ```mermaid
 flowchart TD
-    API[FastAPI Gateway] --> Runtime[Agent Runtime / ADK]
+    API[FastAPI Gateway] --> RTC[Realtime Turn Controller]
+    RTC --> Runtime[Agent Runtime / ADK]
 
     subgraph RuntimeBox[Agent Runtime / ADK]
       TPW[Topic Pack Workflow]
-      CD[Conversation Director]
       PA[Persona Agent A]
       PB[Persona Agent B]
       PC[Persona Agent C]
+      CPO[Conversation Policy Observer]
       SO[Scoring Observer]
       HG[Hint Generator]
       RA[Review Agent]
@@ -49,16 +54,18 @@ flowchart TD
     end
 
     TPW --> APS
-    CD --> PA
-    CD --> PB
-    CD --> PC
-    CD --> HG
-    CD --> SO
+    RTC --> PA
+    RTC --> PB
+    RTC --> PC
+    RTC --> HG
+    RTC --> SO
+    CPO --> APS
+    CPO --> RTC
     RA --> APS
     PA <--> APS
     PB <--> APS
     PC <--> APS
-    CD <--> APS
+    RTC <--> APS
 
     Runtime <--> Live[Gemini Live API]
     TPW --> XAPI[X API]
@@ -68,7 +75,7 @@ flowchart TD
 
 ## 4. Topic Pack Workflow
 
-トピック作成は、会話中ではなく会話開始前に行う。LLMに任意のURLやパラメータを自由生成させるのではなく、型付きPython関数と固定順序で実装する。
+トピック作成は、会話中ではなく会話開始前に行う。LLMに任意のURLやパラメータを自由生成させるのではなく、FastAPI側から型付きPython関数、tool、agentを固定順序で呼び出すアプリケーション主導型で実装する。
 
 ```text
 TopicPackWorkflow
@@ -117,13 +124,15 @@ flowchart TD
 - Structured Output schemaの厳密さ。
 - Topic Pack cacheの再利用期間。
 
-## 5. Conversation Director
+## 5. Realtime Turn Controller / Policy Observer
 
-Directorはユーザーに直接話すPersonaではなく、会話全体を制御するCoordinatorである。
+Realtime Turn Controllerは、ユーザーに直接話すPersonaではなく、会話全体を制御する決定論的なCoordinatorである。ユーザーへの返答開始前に複数LLMを直列実行しないため、次話者の最終決定、floor control、AI連続発話制限、barge-in、終了条件はコード側で保証する。
+
+Conversation Policy Observerは、話題位置、停滞、困惑、次ターン候補などを非同期に分析する補助役である。Observer結果には `based_on_turn_id` と `state_version` を持たせ、古い状態に基づく提案は適用しない。
 
 ### 5.1 主な責務
 
-- 次の発話者を選ぶ。
+- 次の発話者を最終決定する。
 - Persona Agentへ遷移する。
 - 話題の現在位置とconversation beatsを管理する。
 - AI同士の連続発話を制限する。
@@ -132,7 +141,7 @@ Directorはユーザーに直接話すPersonaではなく、会話全体を制�
 - ヒント表示条件を判定する。
 - セッション終了条件を判定する。
 
-### 5.2 Director出力案
+### 5.2 Turn Controller action案
 
 ```json
 {
@@ -150,6 +159,20 @@ Directorはユーザーに直接話すPersonaではなく、会話全体を制�
   "action": "open_user_floor",
   "prompt_user": true,
   "prompt_style": "light_question"
+}
+```
+
+### 5.3 Policy Observer出力案
+
+```json
+{
+  "based_on_turn_id": "turn_008",
+  "state_version": 14,
+  "topic_position": "adjacent_topic",
+  "user_engagement": "high",
+  "user_confusion": "low",
+  "suggested_next_move": "let_user_continue",
+  "suggested_persona_id": "alice"
 }
 ```
 
@@ -223,9 +246,18 @@ Frontend
 
 FrontendはADK eventの`author`またはFastAPIが整形した`speaker_id`で話者を識別する。
 
-## 8. 文字起こしと文脈共有
+## 8. 会話履歴・文字起こし・文脈共有
 
-マルチエージェント構成では、Agent遷移時に直前までの会話をテキスト文脈として渡す必要がある。
+マルチエージェント構成では、Agent遷移時に直前までの会話をテキスト文脈として渡す必要がある。Gemini Live APIやADKのlive sessionは接続中の低遅延文脈を扱えるが、再接続、復習、Review、長時間会話、複数Personaの引き継ぎをすべて包含する前提にはしない。
+
+そのため、会話に関する情報を次の4種類に分けて明示的に管理する。
+
+| 種別 | 内容 | 主な用途 |
+|---|---|---|
+| `conversation_history` | ユーザー/AIの確定発話イベント列。 | Persona文脈、Review、復習、再接続。 |
+| `conversation_state` | floor owner、active speaker、last questioner、active beat、silence stage等。 | Turn Controllerの制御、Observer結果の適用判断。 |
+| `conversation_beats` | 会話中に達成したい状態。固定台本ではない。 | 進行補助、終了条件、話題復帰。 |
+| `conversation_summary` | 古い履歴の圧縮要約。 | token量削減、長時間会話の文脈維持。 |
 
 Persona間で共有する情報:
 
@@ -233,11 +265,15 @@ Persona間で共有する情報:
 - AI発話の確定文字起こし
 - Topic Pack
 - 会話の現在位置
+- active beatとbeat進捗
 - 既に質問した内容
 - ユーザーから得た情報
 - 現在のスコア状態
+- 会話要約
 
 一方、生音声の感情やニュアンスが次のAgentへ完全に引き継がれるとは限らない。必要に応じて補助状態を保持するが、MVP必須ではない。
+
+確定前のpartial transcriptやpartial agent textは文脈のSoTにしない。再接続時は確定済みeventと状態snapshotから復元し、partialは破棄する。
 
 ## 9. Floor Control
 
@@ -251,6 +287,13 @@ Persona間で共有する情報:
   "active_speaker": null,
   "user_is_speaking": false,
   "ai_consecutive_turns": 0,
+  "last_speaker": "alice",
+  "last_questioner": "bob",
+  "active_beat_id": "beat_002",
+  "beat_progress": "in_progress",
+  "side_topic": null,
+  "silence_stage": 0,
+  "state_version": 14,
   "current_turn_id": "turn_008"
 }
 ```
@@ -259,7 +302,7 @@ Persona間で共有する情報:
 
 1. ユーザーが音声ボタンを押したら、floorを即座にユーザーへ移す。
 2. ユーザー発話中は、どのPersonaも発話開始しない。
-3. ユーザー発話終了後、Directorが第一話者を1人選ぶ。
+3. ユーザー発話終了後、Turn Controllerが第一話者を1人選ぶ。
 4. 必要な場合だけ、別Personaが1回追加反応する。
 5. AIの連続発話は最大2回。
 6. 上限に達したら必ずユーザーへfloorを戻す。
@@ -304,9 +347,11 @@ push-to-talk方式を採用する。
 
 必要であれば確定文字起こしをScoring Observerへ渡すが、その結果を次のPersona発話生成の前提にはしない。
 
+Scoring Observerが意味評価を行う場合も、次のPersona発話前に同期で待たない。結果はReview材料または次ターン以降の補助情報として扱う。
+
 ## 12. Hint Generator
 
-Hint Generatorは、常時クリティカルパスに置かず、要求時またはDirectorが必要と判断した場合のみ使う。
+Hint Generatorは、常時クリティカルパスに置かず、ユーザー要求時またはTurn Controllerが必要と判断した場合のみ使う。
 
 出力候補:
 
@@ -404,22 +449,25 @@ Review Agentは会話終了後に、復習画面向けのStructured Outputを生
 
 | TBD ID | 未決定事項 | 判断観点 |
 |---|---|---|
-| TBD-AGT-001 | ADK上の具体的なroot/sub_agents構成 | Directorをrootにするか、別rootからDirectorへ委譲するか。 |
+| TBD-AGT-001 | ADK上の具体的なroot/sub_agents構成 | Turn ControllerをFastAPI側に置く範囲と、ADK側の委譲単位。 |
 | TBD-AGT-002 | Persona別Voiceの実動作 | ADK/Live APIのバージョン固定、実環境検証。 |
-| TBD-AGT-003 | Topic Pack Workflowの実装場所 | Agent Runtime内workflowか、FastAPIから個別tool呼び出しか。 |
-| TBD-AGT-004 | Directorの次話者決定方式 | LLM判断、ルールベース、ハイブリッド。 |
+| TBD-AGT-003 | Topic Pack Workflowの実装境界 | FastAPI主導でどこまでtool/agentを個別呼び出しするか。 |
+| TBD-AGT-004 | 次話者決定方式 | ルールベース優先順位、Observer提案の採用条件、Personaバランス。 |
 | TBD-AGT-005 | Scoring Observerの実行方式 | コードで軽量計算、Agentで非同期評価、終了後のみ評価。 |
-| TBD-AGT-006 | Hint Generatorのトリガー | ユーザー要求、沈黙、低参加度、Director判断。 |
+| TBD-AGT-006 | Hint Generatorのトリガー | ユーザー要求、沈黙、低参加度、Turn Controller判断。 |
 | TBD-AGT-007 | Review JSON Schema | スコア軸、文法カテゴリ、説明言語。 |
 | TBD-AGT-008 | Agent Runtime名称統一 | 既存文書のAgent Engine表記との整合。 |
+| TBD-AGT-009 | 会話履歴要約 | 何ターンでsummary化するか、確定履歴とsummaryをPersona promptへどう渡すか。 |
+| TBD-AGT-010 | Live API session contextの扱い | active session内文脈と永続化したconversation_history/stateの同期境界。 |
 
 ## 17. 次に作るべき詳細設計
 
 1. ADK runtime構成図とroot/sub_agents定義。
 2. Topic Pack JSON Schema。
-3. Director action schema。
+3. Turn Controller action schema。
 4. Persona初期セットとvoice設定。
 5. WebSocket eventとADK eventの対応表。
 6. Floor Control state machine。
 7. Review Agent Structured Output schema。
 8. Agent Behavior Testの固定入力と期待挙動。
+9. conversation_history / state / summaryをPersona promptへ渡す形式。
