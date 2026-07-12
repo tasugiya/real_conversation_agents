@@ -22,11 +22,11 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-import vertexai
 from google.adk.agents import Agent
 from google.adk.agents.live_request_queue import LiveRequest, LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
+from google.adk.models import Gemini
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -93,13 +93,26 @@ def _get_runner() -> Runner:
     global _runner
     if _runner is None:
         settings = get_settings()
-        # Tell google-genai SDK to use Vertex AI backend (IAM/ADC) instead of
-        # Google AI Studio (which requires an API key). Must be called before
-        # the ADK Agent/Runner is instantiated.
-        vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
+        # ADK builds its own google-genai Client internally (google_llm.py's
+        # api_client/_live_api_client) and does NOT read vertexai.init()'s
+        # global state -- that only affects the older vertexai.generative_models
+        # SDK (used by gemini_client.py), a separate mechanism entirely. Without
+        # an explicit vertexai=True/project/location, google-genai falls back to
+        # the GOOGLE_GENAI_USE_VERTEXAI/GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION
+        # env vars, which aren't set here, so it defaults to API-key mode and
+        # fails with "No API key was provided". client_kwargs is ADK's supported
+        # pass-through to the google.genai.Client constructor for exactly this.
+        model = Gemini(
+            model=MODEL_NAME,
+            client_kwargs={
+                "vertexai": True,
+                "project": settings.gcp_project_id,
+                "location": settings.gcp_region,
+            },
+        )
         agent = Agent(
             name="conversation_agent",
-            model=MODEL_NAME,
+            model=model,
             instruction=ROOT_INSTRUCTION,
         )
         _runner = Runner(

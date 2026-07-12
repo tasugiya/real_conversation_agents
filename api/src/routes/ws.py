@@ -129,13 +129,15 @@ async def _inject_reconnect_history(
 ) -> None:
     """Send the last N session messages to the agent so it can continue naturally
     after a reconnect. Called only when last_sequence > 0."""
+    # limit_to_last() queries can't be streamed -- Firestore requires .get()
+    # for them (raises ValueError otherwise). See LOG.md for the incident.
     recent = (
         firestore_client.get_client()
         .collection(SESSION_MESSAGES_COLLECTION)
         .where("session_id", "==", session_id)
         .order_by("created_at")
         .limit_to_last(_RECONNECT_HISTORY_LIMIT)
-        .stream()
+        .get()
     )
     msgs = [d.to_dict() for d in recent]
     if not msgs:
