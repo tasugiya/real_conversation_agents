@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+import vertexai
 from google.adk.agents import Agent
 from google.adk.agents.live_request_queue import LiveRequest, LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -91,6 +92,11 @@ _runner: Runner | None = None
 def _get_runner() -> Runner:
     global _runner
     if _runner is None:
+        settings = get_settings()
+        # Tell google-genai SDK to use Vertex AI backend (IAM/ADC) instead of
+        # Google AI Studio (which requires an API key). Must be called before
+        # the ADK Agent/Runner is instantiated.
+        vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
         agent = Agent(
             name="conversation_agent",
             model=MODEL_NAME,
