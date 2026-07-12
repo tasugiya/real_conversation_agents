@@ -19,14 +19,9 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import vertexai
+from google import genai
+from google.genai import types as genai_types
 from pydantic import BaseModel, Field
-from vertexai.generative_models import (
-    GenerationConfig,
-    GenerativeModel,
-    Tool,
-    grounding,
-)
 
 from ..config import get_settings
 from ..services import firestore_client
@@ -35,17 +30,6 @@ logger = logging.getLogger("topic_pack_generate")
 
 TOPIC_PACKS_COLLECTION = "topic_packs"
 MODEL_NAME = "gemini-2.5-flash"
-
-_initialized = False
-
-
-def _ensure_init() -> None:
-    global _initialized
-    if _initialized:
-        return
-    settings = get_settings()
-    vertexai.init(project=settings.gcp_project_id, location=settings.gcp_region)
-    _initialized = True
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +105,6 @@ def generate(topic_pack_id: str, topic_id: str, topic_title: str | None = None) 
     topic = topic_title or topic_id.replace("_", " ").replace("-", " ")
 
     try:
-        _ensure_init()
         pack = _generate_with_gemini(topic)
     except Exception as exc:
         logger.exception("topic_pack_generate: Gemini research failed for %r: %s", topic, exc)
@@ -151,17 +134,22 @@ def generate(topic_pack_id: str, topic_id: str, topic_title: str | None = None) 
 
 
 def _generate_with_gemini(topic: str) -> TopicPackOutput:
-    search_tool = Tool.from_google_search_retrieval(
-        google_search_retrieval=grounding.GoogleSearchRetrieval()
+    settings = get_settings()
+    client = genai.Client(
+        vertexai=True,
+        project=settings.gcp_project_id,
+        location=settings.gcp_region,
     )
-    model = GenerativeModel(MODEL_NAME)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     prompt = _RESEARCH_PROMPT_TEMPLATE.format(topic=topic, today=today)
 
-    response = model.generate_content(
-        prompt,
-        tools=[search_tool],
-        generation_config=GenerationConfig(temperature=0.3),
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+            temperature=0.3,
+        ),
     )
 
     # Extract JSON from response text (may be wrapped in markdown code fence)
