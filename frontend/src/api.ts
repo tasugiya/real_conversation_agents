@@ -23,6 +23,70 @@ async function request<T>(path: string, token: string | null, init?: RequestInit
   return response.json() as Promise<T>;
 }
 
+// Gemini Live API's audio output is documented as 16-bit PCM mono @ 24kHz
+// (distinct from the 16kHz the mic input is encoded at -- see pcm-worklet.js).
+// If played-back audio sounds pitched/garbled on a real device, this is the
+// first thing to verify against the actual stream.
+const PLAYBACK_SAMPLE_RATE = 24000;
+
+// Schedules incoming raw PCM16 chunks back-to-back on a single AudioContext
+// so playback has no gaps/clicks between WS frames, without needing an
+// AudioWorklet (scheduling on the main thread is fine for playback, unlike
+// capture where jank would drop samples).
+function createPlaybackQueue() {
+  let audioContext: AudioContext | null = null;
+  let nextStartTime = 0;
+  let activeSources: AudioBufferSourceNode[] = [];
+
+  function ensureContext(): AudioContext {
+    if (!audioContext) {
+      audioContext = new AudioContext({ sampleRate: PLAYBACK_SAMPLE_RATE });
+      nextStartTime = audioContext.currentTime;
+    }
+    return audioContext;
+  }
+
+  return {
+    enqueue(data: ArrayBuffer) {
+      const ctx = ensureContext();
+      const pcm16 = new Int16Array(data);
+      const float32 = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i += 1) {
+        float32[i] = pcm16[i] / (pcm16[i] < 0 ? 0x8000 : 0x7fff);
+      }
+      const buffer = ctx.createBuffer(1, float32.length, PLAYBACK_SAMPLE_RATE);
+      buffer.copyToChannel(float32, 0);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      const startAt = Math.max(ctx.currentTime, nextStartTime);
+      source.onended = () => { activeSources = activeSources.filter((s) => s !== source); };
+      source.start(startAt);
+      nextStartTime = startAt + buffer.duration;
+      activeSources.push(source);
+    },
+    clear() {
+      // Cut off in-flight playback on user interrupt so the agent doesn't
+      // keep talking over the user.
+      activeSources.forEach((source) => {
+        try { source.stop(); } catch { /* already stopped/ended */ }
+      });
+      activeSources = [];
+      if (audioContext) nextStartTime = audioContext.currentTime;
+    },
+    async close() {
+      activeSources.forEach((source) => {
+        try { source.stop(); } catch { /* already stopped/ended */ }
+      });
+      activeSources = [];
+      if (audioContext) {
+        await audioContext.close();
+        audioContext = null;
+      }
+    },
+  };
+}
+
 export const api = {
   async login(username: string, password: string): Promise<AuthResult> {
     if (usingMockApi) {
@@ -109,7 +173,9 @@ export const api = {
     // that travels safely in the URL query string instead.
     const ticket = await request<{ stream_ticket: string }>(`/v1/sessions/${sessionId}/stream-ticket`, token, { method: "POST" });
     const socket = new WebSocket(`${baseUrl!.replace(/^http/, "ws")}/v1/sessions/${sessionId}/stream?ticket=${encodeURIComponent(ticket.stream_ticket)}`);
+    socket.binaryType = "arraybuffer";
     let closingIntentionally = false;
+    const playback = createPlaybackQueue();
     socket.onmessage = (message) => {
       if (typeof message.data === "string") {
         const data = JSON.parse(message.data) as {
@@ -123,6 +189,11 @@ export const api = {
           message: data.payload?.message,
           remainingSeconds: data.payload?.remaining_seconds,
         });
+      } else if (message.data instanceof ArrayBuffer) {
+        // Agent audio (event.type == "audio_chunk" server-side) -- sent as a
+        // raw binary frame, not JSON, so it's handled here rather than via
+        // onEvent. See BUG-018: previously dropped unconditionally.
+        playback.enqueue(message.data);
       }
     };
     socket.onerror = () => onError("会話ストリームへの接続に失敗しました。");
@@ -135,8 +206,8 @@ export const api = {
       startSpeech: () => socket.send(JSON.stringify({ type: "user.speech.start" })),
       sendAudio: (audio) => socket.send(audio),
       endSpeech: () => socket.send(JSON.stringify({ type: "user.speech.end" })),
-      interrupt: () => socket.send(JSON.stringify({ type: "user.interrupt" })),
-      close: () => { closingIntentionally = true; socket.close(); },
+      interrupt: () => { playback.clear(); socket.send(JSON.stringify({ type: "user.interrupt" })); },
+      close: () => { closingIntentionally = true; socket.close(); void playback.close(); },
     };
   },
 };

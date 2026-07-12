@@ -463,11 +463,16 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
   const [ending, setEnding] = useState(false);
   const [connectionState, setConnectionState] = useState<"connecting" | "live" | "interrupted">("connecting");
   const connection = useRef<StreamConnection | null>(null);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<Blob[]>([]);
+  const micContext = useRef<AudioContext | null>(null);
+  const micStream = useRef<MediaStream | null>(null);
+  const micNode = useRef<AudioWorkletNode | null>(null);
   const activeRef = useRef(true);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<number | undefined>(undefined);
+  // Set once the server ends the session on purpose (time limit reached).
+  // Guards handleStreamProblem so the WS close that follows isn't mistaken
+  // for a dropped connection and retried -- see BUG-020.
+  const sessionEndedRef = useRef(false);
 
   function handleEvent(event: StreamEvent) {
     switch (event.type) {
@@ -505,6 +510,15 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       case "session.time_warning":
         setTimeWarning(event.remainingSeconds ?? null);
         return;
+      case "session.time_limit":
+        // The server is about to close the WS on purpose. Wrap up the same
+        // way the manual "end" button does instead of waiting for onclose
+        // to (wrongly) treat this as a dropped connection -- see BUG-020.
+        if (!sessionEndedRef.current) {
+          sessionEndedRef.current = true;
+          void finish();
+        }
+        return;
       case "system.error":
         onError(event.message ?? t("conversation.errorContinue"));
         return;
@@ -531,6 +545,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
 
   function handleStreamProblem(_message: string) {
     if (!activeRef.current) return;
+    if (sessionEndedRef.current) return;
     retryCountRef.current += 1;
     if (retryCountRef.current > MAX_STREAM_RETRIES) {
       setConnectionState("interrupted");
@@ -551,6 +566,9 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       activeRef.current = false;
       window.clearTimeout(retryTimerRef.current);
       connection.current?.close();
+      micNode.current?.disconnect();
+      micContext.current?.close();
+      micStream.current?.getTracks().forEach((track) => track.stop());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.session_id, token]);
@@ -575,29 +593,44 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
     connection.current.sendText(text);
   }
 
+  function stopMicrophone() {
+    micNode.current?.port.close();
+    micNode.current?.disconnect();
+    micNode.current = null;
+    void micContext.current?.close();
+    micContext.current = null;
+    micStream.current?.getTracks().forEach((track) => track.stop());
+    micStream.current = null;
+    connection.current?.endSpeech();
+    setThinking(true);
+    setRecording(false);
+  }
+
   async function toggleMicrophone() {
-    if (recorder.current?.state === "recording") {
-      recorder.current.stop();
-      setRecording(false);
+    if (recording) {
+      stopMicrophone();
       return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      chunks.current = [];
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size) chunks.current.push(event.data);
+      // Match the backend's expected wire format (audio/pcm;rate=16000,
+      // see agent_engine_client.py) by creating the AudioContext at 16kHz
+      // directly -- the browser resamples the mic's native rate into it.
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      await audioContext.audioWorklet.addModule(new URL("./pcm-worklet.js", import.meta.url));
+      const source = audioContext.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(audioContext, "pcm-worklet-processor");
+      workletNode.port.onmessage = (event) => {
+        connection.current?.sendAudio(event.data as ArrayBuffer);
       };
-      mediaRecorder.onstop = () => {
-        connection.current?.sendAudio(new Blob(chunks.current, { type: mediaRecorder.mimeType }));
-        connection.current?.endSpeech();
-        stream.getTracks().forEach((track) => track.stop());
-        setThinking(true);
-      };
-      recorder.current = mediaRecorder;
+      // Deliberately not connected to audioContext.destination -- we don't
+      // want to hear our own mic input played back.
+      source.connect(workletNode);
+      micContext.current = audioContext;
+      micStream.current = stream;
+      micNode.current = workletNode;
       connection.current?.interrupt();
       connection.current?.startSpeech();
-      mediaRecorder.start();
       setRecording(true);
     } catch {
       onError(t("conversation.errorMic"));
