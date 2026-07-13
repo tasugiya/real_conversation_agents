@@ -31,14 +31,16 @@ class TestRateLimiterCategorySeparation:
     async def test_different_categories_do_not_share_quota(self):
         with patch("src.middleware.rate_limit.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(rate_limit_per_ip_per_minute=1)
-            stream_ticket = rate_limiter("stream_ticket")
+            # "session_setup" carries no category multiplier, unlike
+            # stream_ticket (3x) -- keeps this test's limit exactly 1/min.
+            session_setup = rate_limiter("session_setup")
             review = rate_limiter("review")
             request = _fake_request()
 
-            await stream_ticket(request)
-            # A second stream_ticket hit is over the limit (1/min)...
+            await session_setup(request)
+            # A second session_setup hit is over the limit (1/min)...
             with pytest.raises(HTTPException) as exc_info:
-                await stream_ticket(request)
+                await session_setup(request)
             assert exc_info.value.status_code == 429
 
             # ...but "review" is a separate bucket for the same IP, so it's
@@ -79,3 +81,31 @@ class TestRateLimiterCategorySeparation:
             with pytest.raises(HTTPException) as exc_info:
                 await auth(request)
             assert "Retry-After" in exc_info.value.headers
+
+
+class TestRateLimiterCategoryMultipliers:
+    @pytest.mark.asyncio
+    async def test_auth_is_tighter_than_base(self):
+        """auth halves the base limit (rounded down) to slow password guessing."""
+        with patch("src.middleware.rate_limit.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(rate_limit_per_ip_per_minute=10)
+            auth = rate_limiter("auth")
+            request = _fake_request()
+
+            for _ in range(5):
+                await auth(request)
+            with pytest.raises(HTTPException):
+                await auth(request)
+
+    @pytest.mark.asyncio
+    async def test_stream_ticket_is_looser_than_base(self):
+        """stream_ticket triples the base limit so flaky reconnects aren't punished."""
+        with patch("src.middleware.rate_limit.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(rate_limit_per_ip_per_minute=10)
+            stream_ticket = rate_limiter("stream_ticket")
+            request = _fake_request()
+
+            for _ in range(30):
+                await stream_ticket(request)
+            with pytest.raises(HTTPException):
+                await stream_ticket(request)

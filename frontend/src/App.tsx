@@ -43,7 +43,7 @@ function AppShell() {
   const [review, setReview] = useState<Review | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [congested, setCongested] = useState(false);
-  const [booting, setBooting] = useState(() => authStorage.get() !== null);
+  const [booting, setBooting] = useState(true);
 
   // Runs once, only to rehydrate state after a reload -- normal in-app
   // navigation (login -> setup -> session -> review) already sets this
@@ -51,14 +51,24 @@ function AppShell() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const auth = authStorage.get();
+      let auth = authStorage.get();
       const startPath = window.location.pathname;
 
       if (!auth) {
-        authStorage.clear();
-        if (startPath !== "/") navigate("/", { replace: true });
-        setBooting(false);
-        return;
+        // prod skips password verification server-side (routes/auth.py), so
+        // a silent attempt here lets those users skip AuthScreen entirely.
+        // Environments that do require a real password 401 immediately and
+        // fall through to showing it, same as before.
+        try {
+          const attempt = await api.login("", "");
+          auth = { token: attempt.access_token, expiresAt: attempt.expires_at };
+          authStorage.set(auth);
+        } catch {
+          authStorage.clear();
+          if (startPath !== "/") navigate("/", { replace: true });
+          setBooting(false);
+          return;
+        }
       }
 
       setToken(auth.token);

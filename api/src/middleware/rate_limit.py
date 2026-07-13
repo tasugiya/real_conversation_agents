@@ -16,6 +16,14 @@ a single shared bucket meant WS-reconnect ticket churn (create_stream_ticket,
 called on every reconnect attempt) could exhaust the same quota that
 end_session/retry_review needed, causing review generation to 429 before it
 ever ran even though the user never touched a review endpoint themselves.
+
+Categories also get a fixed multiplier on top of the shared per-environment
+base (settings.rate_limit_per_ip_per_minute), since a single flat number
+doesn't fit every category's traffic shape: "auth" is tightened to slow
+password-guessing, "stream_ticket" is loosened since a flaky connection can
+legitimately reconnect many times per minute. This is a hardcoded ratio
+rather than another per-category env var, so dev/prod keep tuning a single
+base number.
 """
 
 from __future__ import annotations
@@ -33,16 +41,28 @@ _WINDOW_SECONDS = 60
 # (ip, category) -> list of request timestamps within the current window
 _hits: dict[tuple[str, str], list[float]] = defaultdict(list)
 
+_CATEGORY_MULTIPLIERS: dict[str, float] = {
+    "auth": 0.5,
+    "stream_ticket": 3.0,
+}
+_MIN_LIMIT = 1
+
+
+def _limit_for(category: str, base: int) -> int:
+    multiplier = _CATEGORY_MULTIPLIERS.get(category, 1.0)
+    return max(_MIN_LIMIT, int(base * multiplier))
+
 
 def rate_limiter(category: str) -> Callable[[Request], Awaitable[None]]:
     """Build a rate-limit dependency scoped to `category` (e.g. "session_setup",
     "stream_ticket", "review") so unrelated traffic can't starve each other's
-    quota. Each category gets its own independent per-IP allowance.
+    quota. Each category gets its own independent per-IP allowance, scaled
+    from the shared base by _CATEGORY_MULTIPLIERS.
     """
 
     async def _enforce(request: Request) -> None:
         settings = get_settings()
-        limit = settings.rate_limit_per_ip_per_minute
+        limit = _limit_for(category, settings.rate_limit_per_ip_per_minute)
         client_ip = request.client.host if request.client else "unknown"
         key = (client_ip, category)
 
