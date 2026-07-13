@@ -82,6 +82,7 @@ async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
             "agent_session_id": agent_session_id,
             "participants": participant_names,
             "participant_personalities": participant_personalities,
+            "language": body.language,
             "started_at": datetime.now(timezone.utc),
         },
     )

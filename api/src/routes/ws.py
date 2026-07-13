@@ -79,17 +79,29 @@ def _finalize_session_update(
     return update
 
 
+_LANGUAGE_NAMES = {"en": "English", "ja": "Japanese"}
+
+
 def _build_session_context(
     tp: dict | None,
     participant_personalities: dict[str, str],
+    language: str = "en",
 ) -> str:
     """Build the initial context message sent to the agent before conversation starts.
 
-    Includes active personas (with their personalities) and topic pack content
-    (if the pack is ready). The agent reads this silently — it must not be
-    spoken aloud or acknowledged (per ROOT_INSTRUCTION rule 7).
+    Includes active personas (with their personalities), the conversation
+    language, and topic pack content (if the pack is ready). The agent reads
+    this silently — it must not be spoken aloud or acknowledged (per
+    ROOT_INSTRUCTION rule 7).
     """
     lines = ["=== SESSION BRIEFING ==="]
+
+    # Language section -- ROOT_INSTRUCTION defers to this (see rule 9) rather
+    # than hardcoding English, since language is a per-session user choice
+    # (CreateSessionRequest.language) that was previously accepted but never
+    # persisted or used.
+    language_name = _LANGUAGE_NAMES.get(language, "English")
+    lines.append(f"Conversation language: {language_name}. All characters must speak {language_name} for this entire session.")
 
     # Persona section
     if participant_personalities:
@@ -179,7 +191,8 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
     participant_personalities: dict[str, str] = doc.get("participant_personalities") or {}
     topic_pack_id = doc.get("topic_pack_id")
     tp = firestore_client.get_document(TOPIC_PACKS_COLLECTION, topic_pack_id) if topic_pack_id else None
-    await agent_session.send_text(_build_session_context(tp, participant_personalities))
+    language = doc.get("language", "en")
+    await agent_session.send_text(_build_session_context(tp, participant_personalities, language))
 
     # Reconnection: restore agent context from conversation history
     last_sequence: int = doc.get("last_sequence", 0)

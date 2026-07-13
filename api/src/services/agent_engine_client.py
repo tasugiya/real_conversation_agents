@@ -88,7 +88,8 @@ Rules:
    descriptions to guide the discussion naturally.
 8. Only state something as a fact if it appears in your briefing; for
    everything else, frame it as an opinion ("I think...", "I heard that...").
-9. Speak in English at a level a language learner can follow (B1-B2 level).
+9. Speak in the conversation language given in your SESSION BRIEFING (English
+   by default) at a level a language learner can follow (B1-B2 level).
 """
 
 # ---------------------------------------------------------------------------

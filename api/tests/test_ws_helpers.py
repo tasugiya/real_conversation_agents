@@ -87,3 +87,19 @@ class TestBuildSessionContext:
         result = _build_session_context(tp, {})
         assert "1. Introduce the topic" in result
         assert "2. Ask the user" in result
+
+    def test_defaults_to_english(self):
+        result = _build_session_context(None, {})
+        assert "Conversation language: English" in result
+
+    def test_japanese_language_injected(self):
+        # Regression guard: CreateSessionRequest.language was accepted but
+        # never persisted or used -- ws.py always spoke English regardless
+        # of the user's selection.
+        result = _build_session_context(None, {}, language="ja")
+        assert "Conversation language: Japanese" in result
+        assert "English" not in result
+
+    def test_unknown_language_code_falls_back_to_english(self):
+        result = _build_session_context(None, {}, language="fr")
+        assert "Conversation language: English" in result
