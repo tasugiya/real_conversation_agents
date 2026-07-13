@@ -8,7 +8,7 @@ fixed topics instead. No exception propagates outside this module.
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
+import time
 
 import httpx
 
@@ -23,6 +23,16 @@ WOEID_JAPAN = 23424856
 WOEID_TOKYO = 1118370
 WOEID_WORLDWIDE = 1
 
+# In-process cache to cut down on paid X API calls (TODO.md P1 #11). Only
+# successful responses are cached -- a missing token or a failed call is
+# never cached, so fixing the token or a transient outage recovers on the
+# very next call rather than being stuck for the TTL. Per-instance only,
+# like rate_limit.py's bucket -- Cloud Run isn't sticky per client, so a
+# cold/different instance just re-fetches; that's an acceptable tradeoff
+# for a hackathon-scale deployment rather than a shared Firestore cache.
+_TREND_CACHE_TTL_SECONDS = 30 * 60
+_trend_cache: dict[int, tuple[float, list[dict]]] = {}
+
 
 def _get_bearer_token(environment: str) -> str | None:
     try:
@@ -35,7 +45,13 @@ async def get_trends(woeid: int, environment: str) -> list[dict]:
     """Return a list of trending topic dicts: {"topic_id": str, "title": str, "source": "x"}.
 
     Returns empty list on any failure so callers can fallback to fixed topics.
+    Successful results are cached per-woeid for _TREND_CACHE_TTL_SECONDS.
     """
+    now = time.monotonic()
+    cached = _trend_cache.get(woeid)
+    if cached is not None and now - cached[0] < _TREND_CACHE_TTL_SECONDS:
+        return cached[1]
+
     bearer_token = _get_bearer_token(environment)
     if not bearer_token:
         logger.info("x_client: no bearer token configured, skipping X trends")
@@ -64,6 +80,7 @@ async def get_trends(woeid: int, environment: str) -> list[dict]:
             "source": "x",
             "tweet_count": item.get("tweet_count"),
         })
+    _trend_cache[woeid] = (now, trends)
     return trends
 
 
