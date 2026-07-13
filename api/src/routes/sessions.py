@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -24,9 +25,11 @@ from ..schemas.session import (
 from ..services import firestore_client
 from ..services.agent_engine_client import create_agent_session
 from ..services.gemini_client import generate_review
+from ..services.memory_monitor import memory_usage_ratio
 from ..services.personas import select_personas
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
+logger = logging.getLogger("sessions")
 
 SESSIONS_COLLECTION = "sessions"
 SESSION_MESSAGES_COLLECTION = "session_messages"
@@ -59,6 +62,21 @@ async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
     active, stale = _filter_stale_sessions(raw)
     _mark_stale_sessions_abandoned(stale)
     if len(active) >= settings.max_concurrent_sessions:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="server is at capacity, please try again later",
+        )
+
+    # Proactively reject before an OOM-kill takes the instance down mid-
+    # conversation instead (BUG-023, see 2026-07-12 incident in LOG.md).
+    # Same response as the capacity check above -- the client doesn't need
+    # to distinguish why, both mean "try again shortly".
+    usage_ratio = memory_usage_ratio()
+    if usage_ratio is not None and usage_ratio >= settings.memory_pressure_threshold:
+        logger.warning(
+            "create_session: memory usage %.0f%% >= threshold %.0f%%, rejecting",
+            usage_ratio * 100, settings.memory_pressure_threshold * 100,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="server is at capacity, please try again later",

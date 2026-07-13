@@ -96,7 +96,7 @@ class TestMarkStaleSessionsAbandoned:
 
 
 class TestCreateSessionConcurrency:
-    def _patched(self, active_docs: list[_FakeDoc], max_concurrent: int = 5):
+    def _patched(self, active_docs: list[_FakeDoc], max_concurrent: int = 5, memory_ratio: float | None = None):
         mock_query = MagicMock()
         mock_query.stream.return_value = active_docs
         mock_collection = MagicMock()
@@ -116,10 +116,36 @@ class TestCreateSessionConcurrency:
             patch(
                 "src.routes.sessions.get_settings",
                 return_value=MagicMock(
-                    session_max_duration_seconds=600, max_concurrent_sessions=max_concurrent
+                    session_max_duration_seconds=600,
+                    max_concurrent_sessions=max_concurrent,
+                    memory_pressure_threshold=0.85,
                 ),
             ),
+            # Default to "unknown" (fail open) so these concurrency-focused
+            # tests aren't coupled to whatever cgroup state the test runner
+            # happens to have -- BUG-023's own tests cover the real values.
+            patch("src.routes.sessions.memory_usage_ratio", return_value=memory_ratio),
         )
+
+    @pytest.mark.asyncio
+    async def test_memory_pressure_above_threshold_returns_503(self):
+        # BUG-023: proactively reject before an OOM-kill takes the instance
+        # down mid-conversation. Concurrency slots are free (0/5) but memory
+        # usage is over the 0.85 threshold.
+        patches = self._patched([], max_concurrent=5, memory_ratio=0.9)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            body = CreateSessionRequest(topic_pack_id="tp1", agent_count=2)
+            with pytest.raises(Exception) as exc_info:
+                await create_session(body)
+        assert "503" in str(exc_info.value) or getattr(exc_info.value, "status_code", None) == 503
+
+    @pytest.mark.asyncio
+    async def test_memory_pressure_below_threshold_does_not_block(self):
+        patches = self._patched([], max_concurrent=5, memory_ratio=0.5)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            body = CreateSessionRequest(topic_pack_id="tp1", agent_count=2)
+            result = await create_session(body)
+        assert result.status == "created"
 
     @pytest.mark.asyncio
     async def test_all_stale_sessions_do_not_block_creation(self):
@@ -127,7 +153,7 @@ class TestCreateSessionConcurrency:
         old = now - timedelta(seconds=600 + 200)
         docs = [_session_doc(str(i), old) for i in range(5)]
         patches = self._patched(docs, max_concurrent=5)
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             body = CreateSessionRequest(topic_pack_id="tp1", agent_count=2)
             result = await create_session(body)
         assert result.status == "created"
@@ -137,7 +163,7 @@ class TestCreateSessionConcurrency:
         now = datetime.now(timezone.utc)
         docs = [_session_doc(str(i), now) for i in range(2)]
         patches = self._patched(docs, max_concurrent=2)
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             body = CreateSessionRequest(topic_pack_id="tp1", agent_count=2)
             with pytest.raises(Exception) as exc_info:
                 await create_session(body)
@@ -168,8 +194,13 @@ class TestCreateSessionConcurrency:
              ), \
              patch(
                  "src.routes.sessions.get_settings",
-                 return_value=MagicMock(session_max_duration_seconds=600, max_concurrent_sessions=5),
-             ):
+                 return_value=MagicMock(
+                     session_max_duration_seconds=600,
+                     max_concurrent_sessions=5,
+                     memory_pressure_threshold=0.85,
+                 ),
+             ), \
+             patch("src.routes.sessions.memory_usage_ratio", return_value=None):
             body = CreateSessionRequest(topic_pack_id="tp1", agent_count=2)
             result = await create_session(body)
         assert result.status == "created"

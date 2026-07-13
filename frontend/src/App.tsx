@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, usingMockApi } from "./api";
+import { ApiError, api, usingMockApi } from "./api";
 import { LocaleContext, readStoredLocale, translate, useLocale, useT, type Locale } from "./i18n";
 import { PERSONA_POOL, personaFor } from "./personas";
 import { navigate, useRoute, type Route } from "./router";
@@ -42,6 +42,7 @@ function AppShell() {
   const [session, setSession] = useState<Session | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [congested, setCongested] = useState(false);
   const [booting, setBooting] = useState(() => authStorage.get() !== null);
 
   // Runs once, only to rehydrate state after a reload -- normal in-app
@@ -151,6 +152,10 @@ function AppShell() {
       setSession(created);
       navigate("/session");
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 503) {
+        setCongested(true);
+        return;
+      }
       setError(reason instanceof Error ? reason.message : t("app.error.sessionStartFailed"));
     }
   }
@@ -211,7 +216,9 @@ function AppShell() {
       )}
 
       {route === "/" && <AuthScreen onSubmit={login} />}
-      {route === "/setup" && <SetupScreen topics={topics} topicsLoading={topicsLoading} onLoadTopics={(region) => token && loadTopics(token, region)} onStart={startSession} />}
+      {route === "/setup" && (congested
+        ? <CongestionScreen onRetry={() => setCongested(false)} />
+        : <SetupScreen topics={topics} topicsLoading={topicsLoading} onLoadTopics={(region) => token && loadTopics(token, region)} onStart={startSession} />)}
       {route === "/session" && session && token && (
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
@@ -469,6 +476,22 @@ function InterruptedScreen({ onRetry, onEvaluate, onGoHome, evaluating }: { onRe
             {t("interrupted.goHome")}
           </button>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function CongestionScreen({ onRetry }: { onRetry: () => void }) {
+  const t = useT();
+  return (
+    <section className="grid min-h-[50vh] place-items-center text-center">
+      <div className="max-w-sm">
+        <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.1em] text-danger">{t("congestion.eyebrow")}</p>
+        <h2 className="font-display mb-3 text-2xl font-medium">{t("congestion.title")}</h2>
+        <p className="mb-8 text-sm text-muted">{t("congestion.body")}</p>
+        <button type="button" onClick={onRetry} className={primaryButtonClass}>
+          {t("congestion.retry")}
+        </button>
       </div>
     </section>
   );

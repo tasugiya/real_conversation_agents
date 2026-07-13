@@ -69,6 +69,11 @@ const en = {
   "interrupted.evaluateBusy": "Preparing feedback...",
   "interrupted.goHome": "Go back home",
 
+  "congestion.eyebrow": "Server is busy",
+  "congestion.title": "We're at capacity right now",
+  "congestion.body": "Too many conversations are running at the moment. Please wait a moment and try again.",
+  "congestion.retry": "Try again",
+
   "conversation.eyebrow": "Live session",
   "conversation.fallbackTitle": "Conversation",
   "conversation.end": "End session",
@@ -166,6 +171,11 @@ const ja: Record<keyof typeof en, string> = {
   "interrupted.evaluate": "ここまでの内容で評価を見る",
   "interrupted.evaluateBusy": "評価を作成中...",
   "interrupted.goHome": "ホームへ戻る",
+
+  "congestion.eyebrow": "混雑しています",
+  "congestion.title": "現在アクセスが集中しています",
+  "congestion.body": "同時に多くの会話セッションが行われているようです。しばらく時間をおいてから、もう一度お試しください。",
+  "congestion.retry": "もう一度試す",
 
   "conversation.eyebrow": "ライブセッション",
   "conversation.fallbackTitle": "会話",

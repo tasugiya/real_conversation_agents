@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     session_max_duration_seconds: int = 600
     max_concurrent_sessions: int = 5
 
+    # Fraction of the container's cgroup memory.max above which create_session
+    # proactively 503s instead of risking an OOM-kill mid-conversation
+    # (BUG-023). See services/memory_monitor.py.
+    memory_pressure_threshold: float = 0.85
+
     # per Cloud Run instance, not global -- see docs/infra/03_SECURITY.md §7.
     # Cloud Run requests are not sticky to one instance, so this should be
     # set to roughly (desired global per-IP cap) / cloud_run_max_instances.

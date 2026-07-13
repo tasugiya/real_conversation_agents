@@ -13,12 +13,24 @@ const mockSessions = new Map<string, { session: Session; userTexts: string[]; re
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 const mockExpiry = () => new Date(Date.now() + 24 * 3_600_000).toISOString();
 
+// Carries the HTTP status alongside the message so callers can distinguish
+// e.g. a 503 "server busy" from any other failure (BUG-023) without parsing
+// the message string.
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, token: string | null, init?: RequestInit): Promise<T> {
   const appCheckToken = await getAppCheckToken();
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(appCheckToken ? { "X-Firebase-AppCheck": appCheckToken } : {}), ...(init?.headers ?? {}) } });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${response.status})`);
+    throw new ApiError(body?.detail || `Request failed (${response.status})`, response.status);
   }
   return response.json() as Promise<T>;
 }
