@@ -62,10 +62,10 @@ function AppShell() {
 
       setToken(auth.token);
       if (startPath === "/") navigate("/setup", { replace: true });
-
-      if (startPath === "/" || startPath === "/setup") {
-        loadTopics(auth.token);
-      }
+      // Trend topics are no longer auto-fetched here (see loadTopics) --
+      // SetupScreen's "load trends" button triggers it explicitly, since
+      // every automatic fetch on login/reload was hitting the X API and
+      // its cost regardless of whether the user actually starts a session.
 
       if (startPath === "/session" || startPath === "/review") {
         const active = activeSessionStorage.get();
@@ -113,10 +113,10 @@ function AppShell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function loadTopics(authToken: string) {
+  function loadTopics(authToken: string, region: string) {
     setTopicsLoading(true);
     api
-      .topics(authToken)
+      .topics(authToken, region)
       .then((fetched) => setTopics(fetched))
       .catch((reason) => setError(reason instanceof Error ? reason.message : t("app.error.topicsFailed")))
       .finally(() => setTopicsLoading(false));
@@ -129,7 +129,6 @@ function AppShell() {
       authStorage.set({ token: auth.access_token, expiresAt: auth.expires_at });
       setToken(auth.access_token);
       navigate("/setup");
-      loadTopics(auth.access_token);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("app.error.loginFailed"));
     }
@@ -212,7 +211,7 @@ function AppShell() {
       )}
 
       {route === "/" && <AuthScreen onSubmit={login} />}
-      {route === "/setup" && <SetupScreen topics={topics} topicsLoading={topicsLoading} onStart={startSession} />}
+      {route === "/setup" && <SetupScreen topics={topics} topicsLoading={topicsLoading} onLoadTopics={(region) => token && loadTopics(token, region)} onStart={startSession} />}
       {route === "/session" && session && token && (
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
@@ -306,10 +305,11 @@ function AuthScreen({ onSubmit }: { onSubmit: (username: string, password: strin
   );
 }
 
-function SetupScreen({ topics, topicsLoading, onStart }: { topics: Topic[]; topicsLoading: boolean; onStart: (topic: string, count: number, language: string, input: InputMode, output: OutputMode) => Promise<void> }) {
+function SetupScreen({ topics, topicsLoading, onLoadTopics, onStart }: { topics: Topic[]; topicsLoading: boolean; onLoadTopics: (region: string) => void; onStart: (topic: string, count: number, language: string, input: InputMode, output: OutputMode) => Promise<void> }) {
   const t = useT();
   const [locale] = useLocale();
   const [topic, setTopic] = useState(topics[0]?.topic_id ?? "");
+  const [region, setRegion] = useState("japan");
   const [agentCount, setAgentCount] = useState(2);
   const [language, setLanguage] = useState("en");
   const [inputMode, setInputMode] = useState<InputMode>("text");
@@ -333,10 +333,34 @@ function SetupScreen({ topics, topicsLoading, onStart }: { topics: Topic[]; topi
 
       <fieldset className="mb-8 border-0 p-0">
         <legend className="mb-2.5 text-sm font-bold">{t("setup.topicLegend")}</legend>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <PillGroup
+            ariaLabel={t("setup.region")}
+            value={region}
+            onChange={setRegion}
+            options={[
+              { value: "japan", label: t("setup.regionJapan") },
+              { value: "tokyo", label: t("setup.regionTokyo") },
+              { value: "worldwide", label: t("setup.regionWorldwide") },
+            ]}
+          />
+          <button
+            type="button"
+            onClick={() => onLoadTopics(region)}
+            disabled={topicsLoading}
+            className="min-h-[38px] rounded-full border border-accent px-4 text-sm font-semibold text-accent transition hover:bg-accent-soft disabled:opacity-60"
+          >
+            {topicsLoading ? t("setup.topicLoading") : topics.length ? t("setup.reloadTopics") : t("setup.loadTopics")}
+          </button>
+        </div>
         {topicsLoading && topics.length === 0 ? (
           <div className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-white/60 px-4 py-6 text-sm text-muted">
             <span aria-hidden className="h-2 w-2 shrink-0 animate-ping rounded-full bg-accent" />
             {t("setup.topicLoading")}
+          </div>
+        ) : topics.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border bg-white/60 px-4 py-6 text-sm text-muted">
+            {t("setup.topicEmpty")}
           </div>
         ) : (
           <div className="grid gap-2.5 sm:grid-cols-3">

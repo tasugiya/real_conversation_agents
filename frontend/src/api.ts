@@ -95,8 +95,8 @@ export const api = {
     }
     return request<AuthResult>("/v1/auth", null, { method: "POST", body: JSON.stringify({ username, password }) });
   },
-  async topics(token: string): Promise<Topic[]> {
-    return usingMockApi ? fixedTopics : (await request<{ topics: Topic[] }>("/v1/topics", token)).topics;
+  async topics(token: string, region: string): Promise<Topic[]> {
+    return usingMockApi ? fixedTopics : (await request<{ topics: Topic[] }>(`/v1/topics?region=${encodeURIComponent(region)}`, token)).topics;
   },
   async createTopicPack(topicId: string, token: string): Promise<TopicPackJob> {
     if (usingMockApi) {
