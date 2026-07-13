@@ -676,7 +676,14 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       const source = audioContext.createMediaStreamSource(stream);
       const workletNode = new AudioWorkletNode(audioContext, "pcm-worklet-processor");
       workletNode.port.onmessage = (event) => {
-        connection.current?.sendAudio(event.data as ArrayBuffer);
+        if (event.data instanceof ArrayBuffer) {
+          connection.current?.sendAudio(event.data);
+        } else if (event.data?.type === "silence") {
+          // Sustained silence after speech was detected -- auto-stop as a
+          // safety net for users who forget to press the mic button again
+          // (the button still works for an immediate manual stop too).
+          stopMicrophone();
+        }
       };
       // Deliberately not connected to audioContext.destination -- we don't
       // want to hear our own mic input played back.
