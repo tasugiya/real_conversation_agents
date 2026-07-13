@@ -1,5 +1,6 @@
 import { getAppCheckToken } from "./firebase";
-import type { InputMode, OutputMode, Review, Session, StreamConnection, StreamEvent, Topic, TopicPack } from "./types";
+import { PERSONA_POOL } from "./personas";
+import type { InputMode, OutputMode, Review, Session, SessionStatus, StreamConnection, StreamEvent, Topic, TopicPack } from "./types";
 
 const configuredMock = import.meta.env.VITE_USE_MOCK_API;
 const baseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
@@ -8,17 +9,94 @@ type AuthResult = { access_token: string; expires_at: string };
 type TopicPackJob = { job_id: string; topic_pack_id: string; status: string };
 const fixedTopics: Topic[] = [{ topic_id: "campus_life", title: "Campus life" }, { topic_id: "weekend_plans", title: "Weekend plans" }, { topic_id: "favorite_media", title: "Favorite movies or shows" }];
 const mockPacks = new Map<string, TopicPack>();
-const mockSessions = new Map<string, { session: Session; userTexts: string[] }>();
+const mockSessions = new Map<string, { session: Session; userTexts: string[]; review: Review | null; expiresAt: string }>();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+const mockExpiry = () => new Date(Date.now() + 24 * 3_600_000).toISOString();
+
+// Carries the HTTP status alongside the message so callers can distinguish
+// e.g. a 503 "server busy" from any other failure (BUG-023) without parsing
+// the message string.
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 async function request<T>(path: string, token: string | null, init?: RequestInit): Promise<T> {
   const appCheckToken = await getAppCheckToken();
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(appCheckToken ? { "X-Firebase-AppCheck": appCheckToken } : {}), ...(init?.headers ?? {}) } });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${response.status})`);
+    throw new ApiError(body?.detail || `Request failed (${response.status})`, response.status);
   }
   return response.json() as Promise<T>;
+}
+
+// Gemini Live API's audio output is documented as 16-bit PCM mono @ 24kHz
+// (distinct from the 16kHz the mic input is encoded at -- see pcm-worklet.js).
+// If played-back audio sounds pitched/garbled on a real device, this is the
+// first thing to verify against the actual stream.
+const PLAYBACK_SAMPLE_RATE = 24000;
+
+// Schedules incoming raw PCM16 chunks back-to-back on a single AudioContext
+// so playback has no gaps/clicks between WS frames, without needing an
+// AudioWorklet (scheduling on the main thread is fine for playback, unlike
+// capture where jank would drop samples).
+function createPlaybackQueue() {
+  let audioContext: AudioContext | null = null;
+  let nextStartTime = 0;
+  let activeSources: AudioBufferSourceNode[] = [];
+
+  function ensureContext(): AudioContext {
+    if (!audioContext) {
+      audioContext = new AudioContext({ sampleRate: PLAYBACK_SAMPLE_RATE });
+      nextStartTime = audioContext.currentTime;
+    }
+    return audioContext;
+  }
+
+  return {
+    enqueue(data: ArrayBuffer) {
+      const ctx = ensureContext();
+      const pcm16 = new Int16Array(data);
+      const float32 = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i += 1) {
+        float32[i] = pcm16[i] / (pcm16[i] < 0 ? 0x8000 : 0x7fff);
+      }
+      const buffer = ctx.createBuffer(1, float32.length, PLAYBACK_SAMPLE_RATE);
+      buffer.copyToChannel(float32, 0);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      const startAt = Math.max(ctx.currentTime, nextStartTime);
+      source.onended = () => { activeSources = activeSources.filter((s) => s !== source); };
+      source.start(startAt);
+      nextStartTime = startAt + buffer.duration;
+      activeSources.push(source);
+    },
+    clear() {
+      // Cut off in-flight playback on user interrupt so the agent doesn't
+      // keep talking over the user.
+      activeSources.forEach((source) => {
+        try { source.stop(); } catch { /* already stopped/ended */ }
+      });
+      activeSources = [];
+      if (audioContext) nextStartTime = audioContext.currentTime;
+    },
+    async close() {
+      activeSources.forEach((source) => {
+        try { source.stop(); } catch { /* already stopped/ended */ }
+      });
+      activeSources = [];
+      if (audioContext) {
+        await audioContext.close();
+        audioContext = null;
+      }
+    },
+  };
 }
 
 export const api = {
@@ -29,8 +107,8 @@ export const api = {
     }
     return request<AuthResult>("/v1/auth", null, { method: "POST", body: JSON.stringify({ username, password }) });
   },
-  async topics(token: string): Promise<Topic[]> {
-    return usingMockApi ? fixedTopics : (await request<{ topics: Topic[] }>("/v1/topics", token)).topics;
+  async topics(token: string, region: string): Promise<Topic[]> {
+    return usingMockApi ? fixedTopics : (await request<{ topics: Topic[] }>(`/v1/topics?region=${encodeURIComponent(region)}`, token)).topics;
   },
   async createTopicPack(topicId: string, token: string): Promise<TopicPackJob> {
     if (usingMockApi) {
@@ -54,18 +132,51 @@ export const api = {
   },
   async createSession(topicPackId: string, agentCount: number, language: string, inputMode: InputMode, outputMode: OutputMode, token: string): Promise<Session> {
     if (usingMockApi) {
-      const session: Session = { session_id: id("session"), status: "created", participants: ["alice", "bob"].slice(0, agentCount) };
-      mockSessions.set(session.session_id, { session, userTexts: [] });
+      const participants = [...PERSONA_POOL].sort(() => Math.random() - 0.5).slice(0, agentCount).map((persona) => persona.name);
+      const session: Session = { session_id: id("session"), status: "created", participants };
+      mockSessions.set(session.session_id, { session, userTexts: [], review: null, expiresAt: mockExpiry() });
       return session;
     }
     return request<Session>("/v1/sessions", token, { method: "POST", body: JSON.stringify({ topic_pack_id: topicPackId, agent_count: agentCount, language, input_mode: inputMode, output_mode: outputMode }) });
   },
+  async getSession(sessionId: string, token: string): Promise<SessionStatus> {
+    if (usingMockApi) {
+      const entry = mockSessions.get(sessionId);
+      if (!entry) throw new Error("セッションが見つかりません。");
+      return { session_id: sessionId, status: entry.review ? "completed" : entry.session.status, expires_at: entry.expiresAt, review_available: entry.review !== null };
+    }
+    return request<SessionStatus>(`/v1/sessions/${sessionId}`, token);
+  },
   async endSession(sessionId: string, token: string): Promise<Review> {
     if (usingMockApi) {
-      const userTexts = mockSessions.get(sessionId)?.userTexts ?? [];
-      return { session_id: sessionId, summary: userTexts.length ? "You joined a short group conversation and shared your own point of view." : "This session ended before a user response was recorded.", score_total: userTexts.length ? 78 : 0, grammar_feedback: userTexts.length ? [{ original: userTexts[0], suggestion: userTexts[0], explanation_ja: "会話を始められています。次は相手への質問を一つ加えてみましょう。", severity: "low" }] : [] };
+      const entry = mockSessions.get(sessionId);
+      const userTexts = entry?.userTexts ?? [];
+      const spoke = userTexts.length > 0;
+      const review: Review = {
+        session_id: sessionId,
+        summary: spoke ? "You joined a short group conversation and shared your own point of view." : "This session ended before a user response was recorded.",
+        score_total: spoke ? 78 : 0,
+        score_communication: spoke ? 82 : 0,
+        score_language: spoke ? 74 : 0,
+        conversation_feedback: spoke ? ["Alice picked up on your point and asked a follow-up.", "Try adding one more reason next time to make your opinion land."] : [],
+        grammar_feedback: spoke ? [{ original: userTexts[0], suggestion: userTexts[0], explanation_ja: "会話を始められています。次は相手への質問を一つ加えてみましょう。", severity: "low" }] : [],
+        user_utterance_count: userTexts.length,
+        ai_utterance_count: userTexts.length,
+        question_count: userTexts.filter((text) => text.includes("?")).length,
+        duration_seconds: spoke ? 96 : 0,
+      };
+      if (entry) entry.review = review;
+      return review;
     }
     return request<Review>(`/v1/sessions/${sessionId}/end`, token, { method: "POST" });
+  },
+  async review(sessionId: string, token: string): Promise<Review> {
+    if (usingMockApi) {
+      const review = mockSessions.get(sessionId)?.review;
+      if (!review) throw new Error("復習データが見つかりません。");
+      return review;
+    }
+    return request<Review>(`/v1/sessions/${sessionId}/review`, token);
   },
   async connect(sessionId: string, token: string, onEvent: (event: StreamEvent) => void, onError: (message: string) => void): Promise<StreamConnection> {
     if (usingMockApi) return connectMock(sessionId, onEvent);
@@ -74,28 +185,77 @@ export const api = {
     // that travels safely in the URL query string instead.
     const ticket = await request<{ stream_ticket: string }>(`/v1/sessions/${sessionId}/stream-ticket`, token, { method: "POST" });
     const socket = new WebSocket(`${baseUrl!.replace(/^http/, "ws")}/v1/sessions/${sessionId}/stream?ticket=${encodeURIComponent(ticket.stream_ticket)}`);
+    socket.binaryType = "arraybuffer";
+    let closingIntentionally = false;
+    const playback = createPlaybackQueue();
+
+    // Wait for the handshake to actually succeed before returning. Without
+    // this, callers (attemptConnect() in App.tsx) treat merely constructing
+    // the WebSocket as "connected" and reset their retry counter, so a
+    // rejected handshake (e.g. a 403 from an expired/invalid ticket) never
+    // counts toward MAX_STREAM_RETRIES and retries indefinitely instead of
+    // surfacing the interrupted screen after a bounded number of attempts.
+    await new Promise<void>((resolve, reject) => {
+      const handleOpen = () => {
+        socket.removeEventListener("error", handleOpenError);
+        resolve();
+      };
+      const handleOpenError = () => {
+        socket.removeEventListener("open", handleOpen);
+        reject(new Error("会話ストリームへの接続に失敗しました。"));
+      };
+      socket.addEventListener("open", handleOpen, { once: true });
+      socket.addEventListener("error", handleOpenError, { once: true });
+    });
+
     socket.onmessage = (message) => {
       if (typeof message.data === "string") {
-        const data = JSON.parse(message.data) as { type: string; speaker_id?: string; payload?: { text?: string; message?: string } };
-        onEvent({ type: data.type, speaker_id: data.speaker_id, text: data.payload?.text, message: data.payload?.message });
+        const data = JSON.parse(message.data) as {
+          type: string;
+          payload?: { speaker_id?: string; text?: string; message?: string; remaining_seconds?: number };
+        };
+        onEvent({
+          type: data.type,
+          speakerId: data.payload?.speaker_id,
+          text: data.payload?.text,
+          message: data.payload?.message,
+          remainingSeconds: data.payload?.remaining_seconds,
+        });
+      } else if (message.data instanceof ArrayBuffer) {
+        // Agent audio (event.type == "audio_chunk" server-side) -- sent as a
+        // raw binary frame, not JSON, so it's handled here rather than via
+        // onEvent. See BUG-018: previously dropped unconditionally.
+        playback.enqueue(message.data);
       }
     };
     socket.onerror = () => onError("会話ストリームへの接続に失敗しました。");
-    return { sendText: (text) => socket.send(JSON.stringify({ type: "user.text", payload: { text } })), startSpeech: () => socket.send(JSON.stringify({ type: "user.speech.start" })), sendAudio: (audio) => socket.send(audio), endSpeech: () => socket.send(JSON.stringify({ type: "user.speech.end" })), interrupt: () => socket.send(JSON.stringify({ type: "user.interrupt" })), close: () => socket.close() };
+    // A close the client didn't ask for (server restart, network drop, ticket
+    // expiry) is exactly the "connection lost" case the interrupted-screen
+    // retry flow needs to detect -- surface it the same way as onerror.
+    socket.onclose = () => { if (!closingIntentionally) onError("会話ストリームが切断されました。"); };
+    return {
+      sendText: (text) => socket.send(JSON.stringify({ type: "user.text", payload: { text } })),
+      startSpeech: () => socket.send(JSON.stringify({ type: "user.speech.start" })),
+      sendAudio: (audio) => socket.send(audio),
+      endSpeech: () => socket.send(JSON.stringify({ type: "user.speech.end" })),
+      interrupt: () => { playback.clear(); socket.send(JSON.stringify({ type: "user.interrupt" })); },
+      close: () => { closingIntentionally = true; socket.close(); void playback.close(); },
+    };
   },
 };
 
 function connectMock(sessionId: string, onEvent: (event: StreamEvent) => void): StreamConnection {
   let closed = false;
+  const session = mockSessions.get(sessionId)?.session;
+  const responder = session?.participants[0] ?? "alice";
   window.setTimeout(() => onEvent({ type: "session.ready" }), 100);
   return {
     sendText: (text) => {
       mockSessions.get(sessionId)?.userTexts.push(text);
       const response = text.includes("?") ? "That is a thoughtful question. I would probably choose something simple and enjoyable." : "That sounds interesting. What made you feel that way?";
-      window.setTimeout(() => !closed && onEvent({ type: "speaker.changed", speaker_id: "alice" }), 250);
-      window.setTimeout(() => !closed && onEvent({ type: "agent.text.delta", speaker_id: "alice", text: response }), 500);
-      window.setTimeout(() => !closed && onEvent({ type: "agent.text.final", speaker_id: "alice", text: response }), 900);
-      window.setTimeout(() => !closed && onEvent({ type: "turn.complete", speaker_id: "alice" }), 950);
+      window.setTimeout(() => !closed && onEvent({ type: "agent.text.delta", speakerId: responder, text: response }), 500);
+      window.setTimeout(() => !closed && onEvent({ type: "agent.text.final", speakerId: responder, text: response }), 900);
+      window.setTimeout(() => !closed && onEvent({ type: "turn.complete", speakerId: responder }), 950);
       window.setTimeout(() => !closed && onEvent({ type: "floor.opened" }), 1000);
     },
     startSpeech: () => undefined, sendAudio: () => undefined, endSpeech: () => undefined,

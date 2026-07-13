@@ -54,4 +54,12 @@ class ReviewResponse(BaseModel):
     session_id: str
     summary: str
     score_total: int
+    score_communication: int = 0
+    score_language: int = 0
+    conversation_feedback: list[str] = []
     grammar_feedback: list[GrammarFeedbackItem] = []
+    # Scoring Observer metrics (objective, not Gemini-generated)
+    user_utterance_count: int = 0
+    ai_utterance_count: int = 0
+    question_count: int = 0
+    duration_seconds: int | None = None

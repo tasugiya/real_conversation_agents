@@ -22,12 +22,26 @@ MODEL_NAME = "gemini-2.5-flash"
 
 REVIEW_INSTRUCTION = """
 You will be given a transcript of a short English conversation practice
-session between a user and AI characters. Produce a short review for the
-user: a one to two sentence summary, an overall score from 0-100, and up to
-3 grammar or phrasing improvement suggestions drawn only from the user's own
-lines. Do not invent lines the user didn't say. If the transcript is too
-short or unclear, still return a valid response with a low score and an
-empty grammar_feedback list rather than failing.
+session between a user and AI characters.
+
+Produce a review with exactly these fields:
+- summary: 1-2 sentences in Japanese summarising the user's overall performance.
+- score_communication: integer 0-50 measuring participation quality (did the user
+  ask questions, respond naturally, keep the conversation going?).
+- score_language: integer 0-50 measuring grammar and vocabulary accuracy.
+- score_total: score_communication + score_language (must equal the sum).
+- conversation_feedback: list of 2-3 SHORT tips in Japanese on how the user can
+  improve conversation flow (e.g. asking follow-ups, avoiding long silences).
+- grammar_feedback: up to 3 items, each with:
+    original: the exact phrase the user said (from the transcript only)
+    suggestion: a corrected or improved version
+    explanation_ja: brief Japanese explanation of why
+
+Rules:
+- Only reference lines labelled as the user (role="user") in the transcript.
+- Do not invent utterances.
+- If the transcript is empty or too short, return summary="会話記録が不足しています。",
+  score_communication=0, score_language=0, score_total=0, empty lists.
 """
 
 
@@ -39,7 +53,10 @@ class GrammarFeedbackItem(BaseModel):
 
 class ReviewResult(BaseModel):
     summary: str
-    score_total: int
+    score_communication: int = 0
+    score_language: int = 0
+    score_total: int = 0
+    conversation_feedback: list[str] = []
     grammar_feedback: list[GrammarFeedbackItem] = []
 
 
@@ -71,4 +88,9 @@ def generate_review(transcript: list[dict]) -> ReviewResult:
         )
         return ReviewResult.model_validate_json(response.text)
     except Exception:
-        return ReviewResult(summary="Review generation is temporarily unavailable.", score_total=0)
+        return ReviewResult(
+            summary="Review generation is temporarily unavailable.",
+            score_total=0,
+            score_communication=0,
+            score_language=0,
+        )

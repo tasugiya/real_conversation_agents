@@ -42,6 +42,18 @@ variable "max_instance_count" {
   default     = 2
 }
 
+variable "memory" {
+  type        = string
+  description = "コンテナ1インスタンスあたりのメモリ上限（例: \"512Mi\", \"8Gi\"）。ADK/aiplatform/genai/FirestoreクライアントのimportだけでCloud Runのデフォルト512MiBに収まらずOOM-killされることがあるため明示する"
+  default     = "512Mi"
+}
+
+variable "cpu" {
+  type        = string
+  description = "コンテナ1インスタンスあたりのCPU上限（例: \"1\", \"2\"）。Cloud RunはmemoryがおよそGiBを超える帯ではCPUも引き上げる必要があるため、memoryと合わせて設定する"
+  default     = "1"
+}
+
 variable "concurrency" {
   type        = number
   description = "1インスタンスあたりの最大同時リクエスト数（WebSocket保持数に直結）"

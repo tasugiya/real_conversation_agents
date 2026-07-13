@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from ..middleware.app_check import require_app_check
 from ..middleware.auth import require_access_token
 from ..middleware.cloud_tasks_auth import require_cloud_tasks_oidc
-from ..middleware.rate_limit import enforce_rate_limit
+from ..middleware.rate_limit import rate_limiter
 from ..schemas.topic_pack import (
     CreateTopicPackAcceptedResponse,
     CreateTopicPackRequest,
@@ -20,7 +20,7 @@ from ..schemas.topic_pack import (
 from ..services import firestore_client
 from ..services.cloud_tasks_client import enqueue_topic_pack_generation
 from ..tasks.topic_pack_generate import TOPIC_PACKS_COLLECTION
-from ..tasks.topic_pack_generate import generate as generate_dummy_topic_pack
+from ..tasks.topic_pack_generate import generate as generate_topic_pack
 
 router = APIRouter(tags=["topic-packs"])
 
@@ -30,7 +30,7 @@ router = APIRouter(tags=["topic-packs"])
     response_model=CreateTopicPackAcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(enforce_rate_limit),
+        Depends(rate_limiter("topic_packs")),
         Depends(require_access_token),
         Depends(require_app_check),
     ],
@@ -55,7 +55,10 @@ async def create_topic_pack(
                 "status": "pending",
             },
         )
-        enqueue_topic_pack_generation(topic_pack_id, body.topic_id, str(request.base_url))
+        enqueue_topic_pack_generation(
+            topic_pack_id, body.topic_id, str(request.base_url),
+            topic_title=body.topic_title,
+        )
 
     return CreateTopicPackAcceptedResponse(job_id=topic_pack_id, topic_pack_id=topic_pack_id)
 
@@ -63,7 +66,7 @@ async def create_topic_pack(
 @router.get(
     "/v1/topic-packs/{topic_pack_id}",
     response_model=TopicPack,
-    dependencies=[Depends(enforce_rate_limit), Depends(require_access_token)],
+    dependencies=[Depends(rate_limiter("topic_packs")), Depends(require_access_token)],
 )
 async def get_topic_pack(topic_pack_id: str) -> TopicPack:
     doc = firestore_client.get_document(TOPIC_PACKS_COLLECTION, topic_pack_id)
@@ -78,5 +81,9 @@ async def get_topic_pack(topic_pack_id: str) -> TopicPack:
     dependencies=[Depends(require_cloud_tasks_oidc)],
 )
 async def internal_generate_topic_pack(topic_pack_id: str, body: dict) -> dict:
-    generate_dummy_topic_pack(topic_pack_id, body["topic_id"])
+    generate_topic_pack(
+        topic_pack_id,
+        body["topic_id"],
+        topic_title=body.get("topic_title"),
+    )
     return {"status": "ok"}
