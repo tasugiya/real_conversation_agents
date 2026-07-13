@@ -222,7 +222,7 @@ function AppShell() {
       {route === "/session" && session && token && (
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
-      {route === "/review" && review && session && <ReviewScreen review={review} participants={session.participants} onNewSession={reset} />}
+      {route === "/review" && review && session && <ReviewScreen review={review} participants={session.participants} onNewSession={reset} onGoHome={goToRecentSessions} />}
       {route === "/reviews" && token && <RecentSessionsScreen token={token} />}
 
       {import.meta.env.DEV && (
@@ -809,7 +809,7 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
   );
 }
 
-function ReviewScreen({ review, participants, onNewSession }: { review: Review; participants: string[]; onNewSession: () => void }) {
+function ReviewScreen({ review, participants, onNewSession, onGoHome }: { review: Review; participants: string[]; onNewSession: () => void; onGoHome: () => void }) {
   const t = useT();
   const minutes = review.duration_seconds != null ? Math.round(review.duration_seconds / 60) : null;
   return (
@@ -877,9 +877,14 @@ function ReviewScreen({ review, participants, onNewSession }: { review: Review; 
         {minutes != null && <span>{t("review.duration", { minutes })}</span>}
       </div>
 
-      <button type="button" onClick={onNewSession} className={primaryButtonClass}>
-        {t("review.newSession")}
-      </button>
+      <div className="flex flex-wrap gap-2.5">
+        <button type="button" onClick={onNewSession} className={primaryButtonClass}>
+          {t("review.newSession")}
+        </button>
+        <button type="button" onClick={onGoHome} className="min-h-[44px] rounded-md border border-border px-5 font-semibold text-muted transition hover:border-accent/50 hover:text-ink">
+          {t("review.goHome")}
+        </button>
+      </div>
     </section>
   );
 }

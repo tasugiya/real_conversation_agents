@@ -103,6 +103,7 @@ const en = {
   "review.questions": "{count} questions asked",
   "review.duration": "{minutes} min session",
   "review.newSession": "Start another session",
+  "review.goHome": "Back to recent sessions",
 
   "recentSessions.title": "Look back at your recent conversations",
   "recentSessions.empty": "No reviewable sessions on this browser yet.",
@@ -206,6 +207,7 @@ const ja: Record<keyof typeof en, string> = {
   "review.questions": "質問 {count}回",
   "review.duration": "{minutes}分のセッション",
   "review.newSession": "もう一度会話する",
+  "review.goHome": "最近のセッションへ戻る",
 
   "recentSessions.title": "直近の会話を振り返る",
   "recentSessions.empty": "このブラウザで復習できるセッションはまだありません。",
