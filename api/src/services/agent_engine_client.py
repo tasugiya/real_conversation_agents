@@ -24,6 +24,7 @@ agent itself to run on Agent Engine), which remains abandoned:
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -70,7 +71,10 @@ human user. You play the AI characters listed in the SESSION BRIEFING below.
 
 Rules:
 1. Only one character speaks per turn. Never speak as more than one
-   character in the same turn.
+   character in the same turn, and never include another character's
+   name-labelled line (like "Emma: ...") inside the current character's
+   turn. If another character wants to react, end the turn and start a
+   new turn as that character.
 2. Start every spoken turn with the character's name and a colon, for
    example "Alice: That's interesting, what do you think?". Always include
    this even when speaking aloud -- the application uses it to identify the
@@ -287,6 +291,37 @@ def _extract_speaker_from_text(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+# Matches a known persona label ("Emma:", "  mia :") at the start of the text
+# or right after whitespace/newline, so a single model turn that (against
+# ROOT_INSTRUCTION rule 1) contains several characters can be split into one
+# event per speaker (BUG-031).
+_SPEAKER_LABEL_RE = re.compile(
+    r"(?:^|(?<=\s))(" + "|".join(re.escape(name) for name in sorted(_KNOWN_PERSONAS)) + r")\s*:",
+    re.IGNORECASE,
+)
+
+
+def _split_speaker_segments(text: str) -> list[tuple[str | None, str]]:
+    """Split text into (speaker_id, text) segments on known 'Name:' labels.
+
+    Text before the first label is returned with speaker None (the caller
+    falls back to the carried-over current speaker). A labelled segment is
+    kept even when its text is empty so the speaker attribution survives
+    (e.g. a delta fragment that is exactly "Alice:").
+    """
+    matches = list(_SPEAKER_LABEL_RE.finditer(text))
+    if not matches:
+        return [(None, text.strip())] if text.strip() else []
+    segments: list[tuple[str | None, str]] = []
+    leading = text[: matches[0].start()].strip()
+    if leading:
+        segments.append((None, leading))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        segments.append((match.group(1).lower(), text[match.end():end].strip()))
+    return segments
+
+
 def _normalize_event(raw: Event, current_speaker: str | None = None) -> list[AgentEvent]:
     """Convert one ADK Event to zero or more AgentEvents.
 
@@ -305,22 +340,28 @@ def _normalize_event(raw: Event, current_speaker: str | None = None) -> list[Age
                     audio=part.inline_data.data,
                 ))
             elif part.text:
-                speaker_id, text = _extract_speaker_from_text(part.text)
-                results.append(AgentEvent(
-                    type="text_delta",
-                    speaker_id=speaker_id or current_speaker or raw.author or None,
-                    text=text,
-                ))
+                for speaker_id, text in _split_speaker_segments(part.text):
+                    results.append(AgentEvent(
+                        type="text_delta",
+                        speaker_id=speaker_id or current_speaker or raw.author or None,
+                        text=text,
+                    ))
+                    # Later segments in the same part must not fall back to
+                    # the pre-part speaker once a labelled segment appeared.
+                    if speaker_id:
+                        current_speaker = speaker_id
 
     # AI speech transcription (output_transcription.finished == True for final)
     if raw.output_transcription and raw.output_transcription.text:
         if raw.output_transcription.finished:
-            speaker_id, text = _extract_speaker_from_text(raw.output_transcription.text)
-            results.append(AgentEvent(
-                type="text_final",
-                speaker_id=speaker_id or current_speaker or raw.author or None,
-                text=text,
-            ))
+            for speaker_id, text in _split_speaker_segments(raw.output_transcription.text):
+                results.append(AgentEvent(
+                    type="text_final",
+                    speaker_id=speaker_id or current_speaker or raw.author or None,
+                    text=text,
+                ))
+                if speaker_id:
+                    current_speaker = speaker_id
 
     # User speech transcription
     if raw.input_transcription and raw.input_transcription.text:
