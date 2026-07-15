@@ -69,6 +69,10 @@ ROOT_INSTRUCTION = """
 You are running a small group English conversation practice session with a
 human user. You play the AI characters listed in the SESSION BRIEFING below.
 
+Make it feel like a real group of friends chatting: the characters keep a
+lively discussion going among themselves, and the user is welcome to jump
+in at any time.
+
 Rules:
 1. Only one character speaks per turn. Never speak as more than one
    character in the same turn, and never include another character's
@@ -80,16 +84,21 @@ Rules:
    this even when speaking aloud -- the application uses it to identify the
    current speaker.
 3. Never speak while the user is still talking.
-4. After the user finishes speaking, wait briefly, then have exactly one
-   character respond. Occasionally let another character add one short
-   remark, but do not have characters talk back-to-back more than once
-   before returning the floor to the user.
-5. Ask the user a question at least every few turns so they stay involved.
+4. When the user speaks, always react to what they said: exactly one
+   character responds first. Between user turns, the characters keep
+   discussing the topic among themselves -- agreeing, disagreeing, joking,
+   and building on each other. They do NOT need to hand the floor back to
+   the user after every turn.
+5. Every few turns, naturally invite the user in (ask their opinion, or
+   relate the topic to them). Never pressure them: if they stay quiet,
+   simply continue the conversation among the characters.
 6. Keep each turn short: one to three sentences.
-7. If you receive a message starting with "=== SESSION BRIEFING ===" or
-   "=== CONVERSATION HISTORY ===", read it silently as your briefing --
-   do NOT read it aloud or acknowledge it. Use the topic, facts, and persona
-   descriptions to guide the discussion naturally.
+7. Messages wrapped in "=== ... ===" markers (such as SESSION BRIEFING or
+   CONVERSATION HISTORY) and messages starting with "[DIRECTOR NOTE]" are
+   silent stage directions from the application, NOT something the user
+   said. Read them silently and follow them in your next utterance. Never
+   read them aloud, never mention them, and never acknowledge, thank, or
+   apologise for them.
 8. Only state something as a fact if it appears in your briefing; for
    everything else, frame it as an opinion ("I think...", "I heard that...").
 9. Speak in the conversation language given in your SESSION BRIEFING (English
@@ -98,7 +107,28 @@ Rules:
    (or the natural second-person form of the conversation language, e.g.
    "あなた" in Japanese). Never invent a name for the user and never use a
    placeholder like "〇〇さん".
+11. Perform each character with the distinct voice style described in the
+   SESSION BRIEFING (pitch, energy, pace) and keep it consistent for the
+   whole session, so listeners can tell the characters apart by sound alone.
+12. When the topic feels fully explored, or a [DIRECTOR NOTE] tells you to
+   wrap up, bring the conversation to a natural close within the next turn
+   or two: have the characters share short closing thoughts and say goodbye
+   to the user. After the goodbye turn is completely finished, call the
+   wrap_up_session tool. Never mention the tool or the wrap-up aloud.
 """
+
+
+def wrap_up_session() -> dict:
+    """Signal that the conversation has fully concluded.
+
+    Call this exactly once, only after the characters have said their final
+    goodbye to the user. The application then ends the session and takes the
+    user to their review screen.
+    """
+    # The docstring above is the tool description the model sees. The actual
+    # session teardown is driven by routes/ws.py reacting to the emitted
+    # "session_wrap" AgentEvent (see _normalize_event), not by this body.
+    return {"status": "acknowledged"}
 
 # ---------------------------------------------------------------------------
 # Normalized event type
@@ -110,7 +140,7 @@ class AgentEvent:
 
     type: str
     # "text_delta" | "text_final" | "audio_chunk" | "turn_complete"
-    # | "interrupted" | "input_transcript_final"
+    # | "interrupted" | "input_transcript_final" | "session_wrap"
     speaker_id: str | None = None
     text: str | None = None
     audio: bytes | None = None
@@ -153,6 +183,7 @@ def _get_runner() -> Runner:
             name="conversation_agent",
             model=model,
             instruction=ROOT_INSTRUCTION,
+            tools=[wrap_up_session],
         )
         _runner = Runner(
             app_name=_APP_NAME,
@@ -354,6 +385,14 @@ def _normalize_event(raw: Event, current_speaker: str | None = None) -> list[Age
                     # the pre-part speaker once a labelled segment appeared.
                     if speaker_id:
                         current_speaker = speaker_id
+            elif (
+                getattr(part, "function_call", None) is not None
+                and getattr(part.function_call, "name", "") == "wrap_up_session"
+            ):
+                # The agent decided the conversation reached its natural end
+                # (ROOT_INSTRUCTION rule 12); ws.py turns this into a
+                # graceful session close.
+                results.append(AgentEvent(type="session_wrap"))
 
     # AI speech transcription (output_transcription.finished == True for final)
     if raw.output_transcription and raw.output_transcription.text:

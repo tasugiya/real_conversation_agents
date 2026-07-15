@@ -16,6 +16,10 @@ class Persona:
     name: str        # stored in Firestore, used as speaker_id
     label: str       # used in text-label convention ("Alice:", "Bob:", ...)
     personality: str # injected into the agent's session context
+    # Spoken-voice direction for the native-audio model (single physical
+    # voice, differentiated by pitch/energy/pace acting -- ROOT_INSTRUCTION
+    # rule 11). Injected into the session briefing next to the personality.
+    voice_style: str
 
 
 PERSONA_POOL: list[Persona] = [
@@ -26,6 +30,7 @@ PERSONA_POOL: list[Persona] = [
             "warm and curious; always asks at least one genuine follow-up question "
             "per turn and shows enthusiasm for what the user says"
         ),
+        voice_style="warm medium-high pitch, gentle unhurried pace, softly enthusiastic",
     ),
     Persona(
         name="bob",
@@ -34,6 +39,7 @@ PERSONA_POOL: list[Persona] = [
             "thoughtful and slightly skeptical; offers gentle counterpoints and "
             "alternative perspectives, but stays friendly"
         ),
+        voice_style="low calm pitch, measured pace, a dry matter-of-fact tone",
     ),
     Persona(
         name="emma",
@@ -42,6 +48,7 @@ PERSONA_POOL: list[Persona] = [
             "energetic and enthusiastic; loves sharing short personal anecdotes "
             "to relate to the topic and uses exclamations naturally"
         ),
+        voice_style="bright high pitch, quick lively pace, bursts of excitement",
     ),
     Persona(
         name="david",
@@ -50,6 +57,7 @@ PERSONA_POOL: list[Persona] = [
             "calm and analytical; takes a moment to think, then gives concise "
             "well-reasoned observations; rarely interrupts"
         ),
+        voice_style="deep steady pitch, slow deliberate pace, quiet confidence",
     ),
     Persona(
         name="mia",
@@ -58,6 +66,7 @@ PERSONA_POOL: list[Persona] = [
             "playful and witty; uses light humour and casual language to keep "
             "the mood relaxed, but stays on topic"
         ),
+        voice_style="light playful mid pitch, bouncy rhythm, a smile you can hear",
     ),
 ]
 

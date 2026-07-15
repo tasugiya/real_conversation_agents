@@ -224,6 +224,35 @@ class TestNormalizeEvent:
             ("bob", "Hello!"),
         ]
 
+    def test_wrap_up_tool_call_emits_session_wrap(self):
+        # ROOT_INSTRUCTION rule 12: the model calls wrap_up_session after the
+        # goodbye turn; ws.py ends the session gracefully on this event.
+        function_call = MagicMock()
+        function_call.name = "wrap_up_session"
+        part = MagicMock()
+        part.text = None
+        part.inline_data = None
+        part.function_call = function_call
+        raw = _make_raw_event()
+        raw.content = MagicMock()
+        raw.content.parts = [part]
+
+        results = _normalize_event(raw)
+        assert [r.type for r in results] == ["session_wrap"]
+
+    def test_other_tool_calls_are_ignored(self):
+        function_call = MagicMock()
+        function_call.name = "some_other_tool"
+        part = MagicMock()
+        part.text = None
+        part.inline_data = None
+        part.function_call = function_call
+        raw = _make_raw_event()
+        raw.content = MagicMock()
+        raw.content.parts = [part]
+
+        assert _normalize_event(raw) == []
+
     def test_output_transcription_not_final_is_ignored(self):
         raw = _make_raw_event()
         transcription = MagicMock()

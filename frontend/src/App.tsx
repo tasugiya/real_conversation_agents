@@ -567,10 +567,14 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       case "session.time_warning":
         setTimeWarning(event.remainingSeconds ?? null);
         return;
+      case "session.wrap":
       case "session.time_limit":
-        // The server is about to close the WS on purpose. Wrap up the same
-        // way the manual "end" button does instead of waiting for onclose
-        // to (wrongly) treat this as a dropped connection -- see BUG-020.
+        // The server is about to close the WS on purpose -- either the
+        // conversation reached its natural end (session.wrap: the agent
+        // said goodbye and called its wrap-up tool) or the hard time limit
+        // hit. Wrap up the same way the manual "end" button does instead
+        // of waiting for onclose to (wrongly) treat this as a dropped
+        // connection -- see BUG-020.
         if (!sessionEndedRef.current) {
           sessionEndedRef.current = true;
           void finish();

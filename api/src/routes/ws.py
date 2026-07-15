@@ -5,11 +5,21 @@ Runs upstream, downstream, and a session timer concurrently using
 asyncio.TaskGroup so that any task ending cancels the others and always
 reaches the finally-close path (fixes BUG-004).
 
-Turn Controller (MEMO 3.1):
-  - Tracks AI consecutive turns; after 2 uninterrupted AI turns sends
-    floor.opened to the client and a nudge to the agent to yield the floor.
-  - Session timer fires session.time_warning at 80% of max duration and
-    session.time_limit at the limit, then terminates the TaskGroup cleanly.
+Turn Controller (MEMO 3.1, redesigned for AI-driven conversation flow):
+  - The characters' discussion is the default state; the user joins at will.
+    Since the Live API only speaks in response to input, the controller sends
+    silent "[DIRECTOR NOTE]" stage directions (ROOT_INSTRUCTION rule 7) to
+    keep the conversation moving: after an AI turn completes and the user
+    stays silent for a few seconds, it asks the characters to continue among
+    themselves; after _MAX_AI_CONSECUTIVE_TURNS uninterrupted AI turns it
+    instead asks them to invite the user back in (and emits floor.opened).
+    Any sign of user activity cancels the pending tick.
+  - Session timer fires session.time_warning at 80% of max duration (also
+    nudging the agent to wrap up naturally) and session.time_limit at the
+    hard limit, then terminates the TaskGroup cleanly.
+  - The agent signals a natural ending by calling its wrap_up_session tool
+    (surfaced as a "session_wrap" AgentEvent), which closes the session the
+    same graceful way the time limit does.
 
 Session message persistence (fixes BUG-001/003):
   - User transcript finals saved with created_at, speaker_id='user', role='user'
@@ -31,6 +41,7 @@ from ..config import get_settings
 from ..middleware.auth import consume_stream_ticket
 from ..services import firestore_client
 from ..services.agent_engine_client import AgentLiveSession
+from ..services.personas import get_persona
 
 router = APIRouter(tags=["ws"])
 logger = logging.getLogger("ws")
@@ -40,13 +51,42 @@ SESSION_MESSAGES_COLLECTION = "session_messages"
 DISPLAY_EVENTS_COLLECTION = "display_events"
 TOPIC_PACKS_COLLECTION = "topic_packs"
 
-# Maximum AI consecutive turns before yielding floor back to the user.
-_MAX_AI_CONSECUTIVE_TURNS = 2
+# Maximum AI consecutive turns before the director invites the user back in.
+# A safety net against an endless AI monologue, not a hard floor-yield: the
+# characters keep talking among themselves below this cap (rule 4/5).
+_MAX_AI_CONSECUTIVE_TURNS = 5
 
-# Nudge sent to the agent when it exceeds the consecutive-turn limit.
-_FLOOR_YIELD_NUDGE = (
-    "You have spoken several times in a row. "
-    "Please pause and wait for the user to respond now."
+# Seconds of user silence after an AI turn before the director asks the
+# characters to keep the conversation going on their own. Tune by feel on
+# a real device.
+_CONTINUE_TICK_SECONDS = 6.0
+
+# Longer grace period right after a character invited the user in, so the
+# user gets a fair chance to answer before the characters move on.
+_POST_INVITE_TICK_SECONDS = 10.0
+
+# After the agent calls wrap_up_session, wait this long before closing so
+# the tail of the goodbye audio still reaches the client.
+_WRAP_FLUSH_SECONDS = 2.0
+
+# Stage directions sent to the agent. ROOT_INSTRUCTION rule 7 makes the
+# model read anything starting with "[DIRECTOR NOTE]" silently -- sending
+# plain user-role text here previously made the agent apologise out loud
+# for talking too much (see TODO.md P2 #13 symptom note).
+_NOTE_CONTINUE = (
+    "[DIRECTOR NOTE] The user is just listening right now. Continue the "
+    "conversation naturally: have the next character react to what was just "
+    "said or bring up a new angle from the briefing."
+)
+_NOTE_INVITE_USER = (
+    "[DIRECTOR NOTE] The characters have been talking among themselves for "
+    "a while. Have one character warmly invite the user into the "
+    "conversation with one short, easy question, then wait for them."
+)
+_NOTE_WRAP_UP = (
+    "[DIRECTOR NOTE] Session time is almost up. Within the next turn or "
+    "two, bring the conversation to a natural close and say goodbye to the "
+    "user, then call the wrap_up_session tool."
 )
 
 # WS message rate limit (upstream frames per minute, including audio chunks).
@@ -86,13 +126,18 @@ def _build_session_context(
     tp: dict | None,
     participant_personalities: dict[str, str],
     language: str = "en",
+    reconnected: bool = False,
 ) -> str:
     """Build the initial context message sent to the agent before conversation starts.
 
-    Includes active personas (with their personalities), the conversation
-    language, and topic pack content (if the pack is ready). The agent reads
-    this silently — it must not be spoken aloud or acknowledged (per
-    ROOT_INSTRUCTION rule 7).
+    Includes active personas (with their personalities and voice styles), the
+    conversation language, and topic pack content (if the pack is ready). The
+    agent reads this silently — it must not be spoken aloud or acknowledged
+    (per ROOT_INSTRUCTION rule 7).
+
+    On a fresh session the briefing ends by telling the characters to open
+    the conversation themselves (the user should not have to speak first);
+    on a reconnect it tells them to continue without greeting again.
     """
     lines = ["=== SESSION BRIEFING ==="]
 
@@ -107,10 +152,14 @@ def _build_session_context(
     if participant_personalities:
         lines.append("Active characters in this session (you play ALL of them):")
         for name, personality in participant_personalities.items():
-            lines.append(f"  {name.capitalize()}: {personality}")
+            persona = get_persona(name)
+            voice = f" Voice style: {persona.voice_style}." if persona else ""
+            lines.append(f"  {name.capitalize()}: {personality}.{voice}")
         lines.append(
             "Only speak as the listed characters above. "
-            "Label every turn with the character's name followed by a colon."
+            "Label every turn with the character's name followed by a colon. "
+            "Perform each character with their distinct voice style so a "
+            "listener can tell them apart by sound alone."
         )
 
     # Topic section
@@ -131,7 +180,19 @@ def _build_session_context(
             lines.append("Suggested conversation flow:")
             lines.extend(f"  {i + 1}. {b}" for i, b in enumerate(beats))
 
-    lines.append("\n=== END BRIEFING === Wait for the user to speak before starting.")
+    if reconnected:
+        lines.append(
+            "\n=== END BRIEFING === The conversation is already in progress; "
+            "a history recap follows. Continue naturally from where it left "
+            "off -- do not greet the user again."
+        )
+    else:
+        lines.append(
+            "\n=== END BRIEFING === Open the conversation now: have one "
+            "character greet the user briefly, introduce the topic in a "
+            "friendly way, and start discussing it. The user may join in "
+            "at any time."
+        )
     return "\n".join(lines)
 
 
@@ -192,10 +253,14 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
     topic_pack_id = doc.get("topic_pack_id")
     tp = firestore_client.get_document(TOPIC_PACKS_COLLECTION, topic_pack_id) if topic_pack_id else None
     language = doc.get("language", "en")
-    await agent_session.send_text(_build_session_context(tp, participant_personalities, language))
+    last_sequence: int = doc.get("last_sequence", 0)
+    await agent_session.send_text(
+        _build_session_context(
+            tp, participant_personalities, language, reconnected=last_sequence > 0
+        )
+    )
 
     # Reconnection: restore agent context from conversation history
-    last_sequence: int = doc.get("last_sequence", 0)
     if last_sequence > 0:
         await _inject_reconnect_history(agent_session, session_id)
 
@@ -205,6 +270,11 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
     sequence = last_sequence  # resume from where we left off
     ai_consecutive_turns = 0
+    # True while the last silence action was an invite -- the next tick then
+    # waits longer so the user gets a fair chance to answer.
+    invite_pending = False
+    silence_task: asyncio.Task | None = None
+    wrap_task: asyncio.Task | None = None
     session_over = asyncio.Event()  # set to terminate all tasks cleanly
     # Set only on intentional-end paths (time limit / client request / rate
     # limit) -- NOT on bare disconnects, so a dropped connection can still
@@ -241,6 +311,50 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         )
 
     # ------------------------------------------------------------------
+    # Silence ticks (Turn Controller)
+    # ------------------------------------------------------------------
+
+    def _cancel_silence_tick() -> None:
+        nonlocal silence_task
+        if silence_task is not None:
+            silence_task.cancel()
+            silence_task = None
+
+    def _schedule_silence_tick() -> None:
+        """(Re)start the countdown after an AI turn completes."""
+        nonlocal silence_task, invite_pending
+        _cancel_silence_tick()
+        delay = _POST_INVITE_TICK_SECONDS if invite_pending else _CONTINUE_TICK_SECONDS
+        invite_pending = False
+        silence_task = asyncio.create_task(_silence_tick(delay))
+
+    async def _silence_tick(delay: float) -> None:
+        """After `delay`s of user silence following an AI turn, keep the
+        conversation moving: ask the characters to continue among themselves,
+        or -- at the consecutive-turn cap -- to invite the user back in."""
+        nonlocal ai_consecutive_turns, invite_pending
+        try:
+            await asyncio.sleep(delay)
+            if session_over.is_set():
+                return
+            if ai_consecutive_turns >= _MAX_AI_CONSECUTIVE_TURNS:
+                ai_consecutive_turns = 0
+                invite_pending = True
+                await send_event("floor.opened")
+                await agent_session.send_text(_NOTE_INVITE_USER)
+            else:
+                await agent_session.send_text(_NOTE_CONTINUE)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("ws.silence_tick session_id=%s", session_id)
+
+    async def _end_after_wrap() -> None:
+        """Give the goodbye audio a moment to flush, then end the session."""
+        await asyncio.sleep(_WRAP_FLUSH_SECONDS)
+        session_over.set()
+
+    # ------------------------------------------------------------------
     # Concurrent tasks
     # ------------------------------------------------------------------
 
@@ -266,6 +380,9 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
             audio_bytes = message.get("bytes")
             if audio_bytes is not None:
+                # The user is talking (mic streams only while active) --
+                # don't let a pending silence tick talk over them.
+                _cancel_silence_tick()
                 await agent_session.send_audio(audio_bytes)
                 continue
 
@@ -288,7 +405,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
     async def downstream() -> None:
         """Read ADK events and forward to the WebSocket client."""
-        nonlocal ai_consecutive_turns
+        nonlocal ai_consecutive_turns, graceful_end, wrap_task
         async for event in agent_session.events():
             if session_over.is_set():
                 return
@@ -327,25 +444,42 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
             elif event.type == "input_transcript_final" and event.text:
                 ai_consecutive_turns = 0  # user spoke — reset floor counter
+                _cancel_silence_tick()
                 await send_event("user.transcript.final", text=event.text)
                 _save_message(speaker_id="user", role="user", text=event.text)
 
             elif event.type == "turn_complete":
                 ai_consecutive_turns += 1
                 await send_event("turn.complete", speaker_id=event.speaker_id)
-                # Turn Controller: if AI has talked too many times without user,
-                # open the floor and nudge the agent to stop.
-                if ai_consecutive_turns >= _MAX_AI_CONSECUTIVE_TURNS:
-                    ai_consecutive_turns = 0
-                    await send_event("floor.opened")
-                    await agent_session.send_text(_FLOOR_YIELD_NUDGE)
+                # Turn Controller: if the user stays silent, a director note
+                # keeps the characters talking (or invites the user back in
+                # at the consecutive-turn cap) -- see _silence_tick.
+                _schedule_silence_tick()
 
             elif event.type == "interrupted":
                 ai_consecutive_turns = 0
+                _cancel_silence_tick()
                 await send_event("agent.interrupted", speaker_id=event.speaker_id)
 
+            elif event.type == "session_wrap":
+                # The agent called wrap_up_session (ROOT_INSTRUCTION rule 12):
+                # the conversation reached its natural end. Close the same
+                # graceful way the time limit does, after letting the tail of
+                # the goodbye audio flush to the client.
+                graceful_end = True
+                _cancel_silence_tick()
+                await send_event("session.wrap")
+                if wrap_task is None:
+                    wrap_task = asyncio.create_task(_end_after_wrap())
+
     async def session_timer() -> None:
-        """Send time_warning at 80% mark; set session_over at the limit."""
+        """Send time_warning at 80% mark; set session_over at the limit.
+
+        The warning also nudges the agent (silently) to steer toward a
+        natural goodbye and call wrap_up_session, so most sessions end via
+        the graceful session_wrap path; the hard limit below stays as the
+        safety net when the model doesn't follow through.
+        """
         nonlocal graceful_end
         await asyncio.sleep(warn_secs)
         try:
@@ -353,6 +487,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
                 "session.time_warning",
                 remaining_seconds=max_secs - warn_secs,
             )
+            await agent_session.send_text(_NOTE_WRAP_UP)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(max_secs - warn_secs)
@@ -369,24 +504,28 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         raise _SessionOver()
 
     async def _handle_client_event(data: dict) -> None:
-        nonlocal graceful_end
+        nonlocal graceful_end, ai_consecutive_turns
         event_type = data.get("type")
 
         if event_type == "ping":
             await send_event("pong")
 
         elif event_type == "user.speech.start":
+            _cancel_silence_tick()
             await agent_session.send_activity_start()
 
         elif event_type == "user.speech.end":
             await agent_session.send_activity_end()
 
         elif event_type == "user.interrupt":
+            _cancel_silence_tick()
             await agent_session.send_interrupt()
 
         elif event_type == "user.text":
             text = data.get("payload", {}).get("text", "")
             if text:
+                ai_consecutive_turns = 0
+                _cancel_silence_tick()
                 await agent_session.send_text(text)
                 _save_message(speaker_id="user", role="user", text=text)
 
@@ -428,6 +567,9 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
+        _cancel_silence_tick()
+        if wrap_task is not None:
+            wrap_task.cancel()
         await agent_session.close()
         # Persist last_sequence so reconnects can resume from here.
         # Skip if session is already in terminal state (completed/ending).
