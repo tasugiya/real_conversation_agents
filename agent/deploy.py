@@ -32,6 +32,16 @@ from src.agent import root_agent
 
 REQUIREMENTS = ["google-cloud-aiplatform[agent_engines,adk]"]
 
+# cloudpickle serializes top-level functions that live in an importable local
+# module (e.g. root_agent's wrap_up_session tool, defined in src/agent.py) by
+# reference -- module path + qualname, not by value. Agent Engine's remote
+# container never had `src/` on its filesystem, so loading such a reference
+# failed with "ModuleNotFoundError: No module named 'src.agent'" as soon as
+# the agent stopped being built entirely from strings and installed-package
+# classes. extra_packages uploads the local source tree alongside the pickle
+# so that import resolves the same way remotely as it did when pickling.
+EXTRA_PACKAGES = ["src"]
+
 
 def build_app() -> reasoning_engines.AdkApp:
     return reasoning_engines.AdkApp(agent=root_agent, enable_tracing=True)
@@ -80,6 +90,7 @@ def main() -> None:
         resource = agent_engines.create(
             agent_engine=app,
             requirements=REQUIREMENTS,
+            extra_packages=EXTRA_PACKAGES,
             display_name=args.display_name,
             service_account=args.service_account,
         )
@@ -89,6 +100,7 @@ def main() -> None:
             resource_name=existing_resource_name,
             agent_engine=app,
             requirements=REQUIREMENTS,
+            extra_packages=EXTRA_PACKAGES,
             service_account=args.service_account,
         )
         print(f"updated: {resource.resource_name}")
