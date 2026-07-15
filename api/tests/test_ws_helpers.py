@@ -78,9 +78,17 @@ class TestBuildSessionContext:
         result = _build_session_context(None, {})
         assert result.startswith("=== SESSION BRIEFING ===")
 
-    def test_ends_with_wait_instruction(self):
+    def test_fresh_session_ends_with_opening_instruction(self):
+        # The characters open the conversation themselves (P2 redesign) --
+        # the user should not have to speak first.
         result = _build_session_context(None, {})
-        assert "Wait for the user to speak" in result
+        assert "Open the conversation now" in result
+        assert "do not greet the user again" not in result
+
+    def test_reconnected_session_does_not_greet_again(self):
+        result = _build_session_context(None, {}, reconnected=True)
+        assert "do not greet the user again" in result
+        assert "Open the conversation now" not in result
 
     def test_conversation_beats_numbered(self):
         tp = self._make_tp()
