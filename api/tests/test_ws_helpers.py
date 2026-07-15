@@ -90,6 +90,19 @@ class TestBuildSessionContext:
         assert "do not greet the user again" in result
         assert "Open the conversation now" not in result
 
+    def test_known_persona_gets_voice_style(self):
+        # alice is in PERSONA_POOL, so her briefing line carries the spoken
+        # voice direction (ROOT_INSTRUCTION rule 11).
+        result = _build_session_context(None, {"alice": "warm and curious"})
+        assert "Voice style: warm medium-high pitch" in result
+
+    def test_unknown_persona_has_no_voice_style(self):
+        # Personas stored in Firestore but absent from the current pool must
+        # not crash the briefing builder.
+        result = _build_session_context(None, {"charlie": "mysterious"})
+        assert "Charlie" in result
+        assert "Voice style:" not in result
+
     def test_conversation_beats_numbered(self):
         tp = self._make_tp()
         result = _build_session_context(tp, {})

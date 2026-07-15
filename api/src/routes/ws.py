@@ -37,6 +37,7 @@ from ..config import get_settings
 from ..middleware.auth import consume_stream_ticket
 from ..services import firestore_client
 from ..services.agent_engine_client import AgentLiveSession
+from ..services.personas import get_persona
 
 router = APIRouter(tags=["ws"])
 logger = logging.getLogger("ws")
@@ -116,10 +117,10 @@ def _build_session_context(
 ) -> str:
     """Build the initial context message sent to the agent before conversation starts.
 
-    Includes active personas (with their personalities), the conversation
-    language, and topic pack content (if the pack is ready). The agent reads
-    this silently — it must not be spoken aloud or acknowledged (per
-    ROOT_INSTRUCTION rule 7).
+    Includes active personas (with their personalities and voice styles), the
+    conversation language, and topic pack content (if the pack is ready). The
+    agent reads this silently — it must not be spoken aloud or acknowledged
+    (per ROOT_INSTRUCTION rule 7).
 
     On a fresh session the briefing ends by telling the characters to open
     the conversation themselves (the user should not have to speak first);
@@ -138,10 +139,14 @@ def _build_session_context(
     if participant_personalities:
         lines.append("Active characters in this session (you play ALL of them):")
         for name, personality in participant_personalities.items():
-            lines.append(f"  {name.capitalize()}: {personality}")
+            persona = get_persona(name)
+            voice = f" Voice style: {persona.voice_style}." if persona else ""
+            lines.append(f"  {name.capitalize()}: {personality}.{voice}")
         lines.append(
             "Only speak as the listed characters above. "
-            "Label every turn with the character's name followed by a colon."
+            "Label every turn with the character's name followed by a colon. "
+            "Perform each character with their distinct voice style so a "
+            "listener can tell them apart by sound alone."
         )
 
     # Topic section
