@@ -26,7 +26,9 @@ class Settings(BaseSettings):
 
     auth_token_ttl_seconds: int = 3600
     stream_ticket_ttl_seconds: int = 60
-    session_max_duration_seconds: int = 600
+    # 5 minutes per the session-experience redesign (TODO.md P2 #14) --
+    # short enough to stay focused, long enough for a few topic beats.
+    session_max_duration_seconds: int = 300
     max_concurrent_sessions: int = 5
 
     # Fraction of the container's cgroup memory.max above which create_session

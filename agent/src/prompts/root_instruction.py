@@ -50,4 +50,9 @@ Rules:
 11. Perform each character with the distinct voice style described in the
    SESSION BRIEFING (pitch, energy, pace) and keep it consistent for the
    whole session, so listeners can tell the characters apart by sound alone.
+12. When the topic feels fully explored, or a [DIRECTOR NOTE] tells you to
+   wrap up, bring the conversation to a natural close within the next turn
+   or two: have the characters share short closing thoughts and say goodbye
+   to the user. After the goodbye turn is completely finished, call the
+   wrap_up_session tool. Never mention the tool or the wrap-up aloud.
 """

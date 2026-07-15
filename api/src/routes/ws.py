@@ -14,8 +14,12 @@ Turn Controller (MEMO 3.1, redesigned for AI-driven conversation flow):
     themselves; after _MAX_AI_CONSECUTIVE_TURNS uninterrupted AI turns it
     instead asks them to invite the user back in (and emits floor.opened).
     Any sign of user activity cancels the pending tick.
-  - Session timer fires session.time_warning at 80% of max duration and
-    session.time_limit at the limit, then terminates the TaskGroup cleanly.
+  - Session timer fires session.time_warning at 80% of max duration (also
+    nudging the agent to wrap up naturally) and session.time_limit at the
+    hard limit, then terminates the TaskGroup cleanly.
+  - The agent signals a natural ending by calling its wrap_up_session tool
+    (surfaced as a "session_wrap" AgentEvent), which closes the session the
+    same graceful way the time limit does.
 
 Session message persistence (fixes BUG-001/003):
   - User transcript finals saved with created_at, speaker_id='user', role='user'
@@ -61,6 +65,10 @@ _CONTINUE_TICK_SECONDS = 6.0
 # user gets a fair chance to answer before the characters move on.
 _POST_INVITE_TICK_SECONDS = 10.0
 
+# After the agent calls wrap_up_session, wait this long before closing so
+# the tail of the goodbye audio still reaches the client.
+_WRAP_FLUSH_SECONDS = 2.0
+
 # Stage directions sent to the agent. ROOT_INSTRUCTION rule 7 makes the
 # model read anything starting with "[DIRECTOR NOTE]" silently -- sending
 # plain user-role text here previously made the agent apologise out loud
@@ -74,6 +82,11 @@ _NOTE_INVITE_USER = (
     "[DIRECTOR NOTE] The characters have been talking among themselves for "
     "a while. Have one character warmly invite the user into the "
     "conversation with one short, easy question, then wait for them."
+)
+_NOTE_WRAP_UP = (
+    "[DIRECTOR NOTE] Session time is almost up. Within the next turn or "
+    "two, bring the conversation to a natural close and say goodbye to the "
+    "user, then call the wrap_up_session tool."
 )
 
 # WS message rate limit (upstream frames per minute, including audio chunks).
@@ -261,6 +274,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
     # waits longer so the user gets a fair chance to answer.
     invite_pending = False
     silence_task: asyncio.Task | None = None
+    wrap_task: asyncio.Task | None = None
     session_over = asyncio.Event()  # set to terminate all tasks cleanly
     # Set only on intentional-end paths (time limit / client request / rate
     # limit) -- NOT on bare disconnects, so a dropped connection can still
@@ -335,6 +349,11 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("ws.silence_tick session_id=%s", session_id)
 
+    async def _end_after_wrap() -> None:
+        """Give the goodbye audio a moment to flush, then end the session."""
+        await asyncio.sleep(_WRAP_FLUSH_SECONDS)
+        session_over.set()
+
     # ------------------------------------------------------------------
     # Concurrent tasks
     # ------------------------------------------------------------------
@@ -386,7 +405,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
 
     async def downstream() -> None:
         """Read ADK events and forward to the WebSocket client."""
-        nonlocal ai_consecutive_turns
+        nonlocal ai_consecutive_turns, graceful_end, wrap_task
         async for event in agent_session.events():
             if session_over.is_set():
                 return
@@ -442,8 +461,25 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
                 _cancel_silence_tick()
                 await send_event("agent.interrupted", speaker_id=event.speaker_id)
 
+            elif event.type == "session_wrap":
+                # The agent called wrap_up_session (ROOT_INSTRUCTION rule 12):
+                # the conversation reached its natural end. Close the same
+                # graceful way the time limit does, after letting the tail of
+                # the goodbye audio flush to the client.
+                graceful_end = True
+                _cancel_silence_tick()
+                await send_event("session.wrap")
+                if wrap_task is None:
+                    wrap_task = asyncio.create_task(_end_after_wrap())
+
     async def session_timer() -> None:
-        """Send time_warning at 80% mark; set session_over at the limit."""
+        """Send time_warning at 80% mark; set session_over at the limit.
+
+        The warning also nudges the agent (silently) to steer toward a
+        natural goodbye and call wrap_up_session, so most sessions end via
+        the graceful session_wrap path; the hard limit below stays as the
+        safety net when the model doesn't follow through.
+        """
         nonlocal graceful_end
         await asyncio.sleep(warn_secs)
         try:
@@ -451,6 +487,7 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
                 "session.time_warning",
                 remaining_seconds=max_secs - warn_secs,
             )
+            await agent_session.send_text(_NOTE_WRAP_UP)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(max_secs - warn_secs)
@@ -531,6 +568,8 @@ async def stream(websocket: WebSocket, session_id: str, ticket: str) -> None:
             pass
     finally:
         _cancel_silence_tick()
+        if wrap_task is not None:
+            wrap_task.cancel()
         await agent_session.close()
         # Persist last_sequence so reconnects can resume from here.
         # Skip if session is already in terminal state (completed/ending).

@@ -25,8 +25,22 @@ from .prompts.root_instruction import ROOT_INSTRUCTION
 # this model is served in `region` (us-central1) before switching regions.
 MODEL_NAME = "gemini-live-2.5-flash-native-audio"
 
+
+def wrap_up_session() -> dict:
+    """Signal that the conversation has fully concluded.
+
+    Call this exactly once, only after the characters have said their final
+    goodbye to the user. The application then ends the session and takes the
+    user to their review screen.
+    """
+    # Keep in sync with api/src/services/agent_engine_client.py -- the
+    # backend reacts to the tool CALL event, not to this return value.
+    return {"status": "acknowledged"}
+
+
 root_agent = Agent(
     name="conversation_agent",
     model=MODEL_NAME,
     instruction=ROOT_INSTRUCTION,
+    tools=[wrap_up_session],
 )

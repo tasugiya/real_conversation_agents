@@ -110,7 +110,25 @@ Rules:
 11. Perform each character with the distinct voice style described in the
    SESSION BRIEFING (pitch, energy, pace) and keep it consistent for the
    whole session, so listeners can tell the characters apart by sound alone.
+12. When the topic feels fully explored, or a [DIRECTOR NOTE] tells you to
+   wrap up, bring the conversation to a natural close within the next turn
+   or two: have the characters share short closing thoughts and say goodbye
+   to the user. After the goodbye turn is completely finished, call the
+   wrap_up_session tool. Never mention the tool or the wrap-up aloud.
 """
+
+
+def wrap_up_session() -> dict:
+    """Signal that the conversation has fully concluded.
+
+    Call this exactly once, only after the characters have said their final
+    goodbye to the user. The application then ends the session and takes the
+    user to their review screen.
+    """
+    # The docstring above is the tool description the model sees. The actual
+    # session teardown is driven by routes/ws.py reacting to the emitted
+    # "session_wrap" AgentEvent (see _normalize_event), not by this body.
+    return {"status": "acknowledged"}
 
 # ---------------------------------------------------------------------------
 # Normalized event type
@@ -122,7 +140,7 @@ class AgentEvent:
 
     type: str
     # "text_delta" | "text_final" | "audio_chunk" | "turn_complete"
-    # | "interrupted" | "input_transcript_final"
+    # | "interrupted" | "input_transcript_final" | "session_wrap"
     speaker_id: str | None = None
     text: str | None = None
     audio: bytes | None = None
@@ -165,6 +183,7 @@ def _get_runner() -> Runner:
             name="conversation_agent",
             model=model,
             instruction=ROOT_INSTRUCTION,
+            tools=[wrap_up_session],
         )
         _runner = Runner(
             app_name=_APP_NAME,
@@ -366,6 +385,14 @@ def _normalize_event(raw: Event, current_speaker: str | None = None) -> list[Age
                     # the pre-part speaker once a labelled segment appeared.
                     if speaker_id:
                         current_speaker = speaker_id
+            elif (
+                getattr(part, "function_call", None) is not None
+                and getattr(part.function_call, "name", "") == "wrap_up_session"
+            ):
+                # The agent decided the conversation reached its natural end
+                # (ROOT_INSTRUCTION rule 12); ws.py turns this into a
+                # graceful session close.
+                results.append(AgentEvent(type="session_wrap"))
 
     # AI speech transcription (output_transcription.finished == True for final)
     if raw.output_transcription and raw.output_transcription.text:
