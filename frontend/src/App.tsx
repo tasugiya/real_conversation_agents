@@ -233,7 +233,7 @@ function AppShell() {
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
       {route === "/review" && review && session && <ReviewScreen review={review} participants={session.participants} onNewSession={reset} onGoHome={goToRecentSessions} />}
-      {route === "/reviews" && token && <RecentSessionsScreen token={token} />}
+      {route === "/reviews" && token && <RecentSessionsScreen token={token} onNewConversation={reset} />}
 
       {import.meta.env.DEV && (
         <span
@@ -899,7 +899,7 @@ function ReviewScreen({ review, participants, onNewSession, onGoHome }: { review
   );
 }
 
-function RecentSessionsScreen({ token }: { token: string }) {
+function RecentSessionsScreen({ token, onNewConversation }: { token: string; onNewConversation: () => void }) {
   const t = useT();
   const [entries, setEntries] = useState<{ id: string; status: SessionStatus | null }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -970,6 +970,11 @@ function RecentSessionsScreen({ token }: { token: string }) {
           </li>
         ))}
       </ul>
+      <div className="mt-7">
+        <button type="button" onClick={onNewConversation} className={primaryButtonClass}>
+          {t("recentSessions.newConversation")}
+        </button>
+      </div>
     </section>
   );
 }

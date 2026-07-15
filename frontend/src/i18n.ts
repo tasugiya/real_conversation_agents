@@ -103,7 +103,7 @@ const en = {
   "review.questions": "{count} questions asked",
   "review.duration": "{minutes} min session",
   "review.newSession": "Start another session",
-  "review.goHome": "Back to recent sessions",
+  "review.goHome": "Look back at recent sessions",
 
   "recentSessions.title": "Look back at your recent conversations",
   "recentSessions.empty": "No reviewable sessions on this browser yet.",
@@ -111,6 +111,7 @@ const en = {
   "recentSessions.sessionLabel": "Session {id}",
   "recentSessions.open": "View",
   "recentSessions.close": "Close",
+  "recentSessions.newConversation": "Start a new conversation",
 };
 
 const ja: Record<keyof typeof en, string> = {
@@ -207,7 +208,7 @@ const ja: Record<keyof typeof en, string> = {
   "review.questions": "質問 {count}回",
   "review.duration": "{minutes}分のセッション",
   "review.newSession": "もう一度会話する",
-  "review.goHome": "最近のセッションへ戻る",
+  "review.goHome": "最近のセッションを振り返る",
 
   "recentSessions.title": "直近の会話を振り返る",
   "recentSessions.empty": "このブラウザで復習できるセッションはまだありません。",
@@ -215,6 +216,7 @@ const ja: Record<keyof typeof en, string> = {
   "recentSessions.sessionLabel": "セッション {id}",
   "recentSessions.open": "見る",
   "recentSessions.close": "閉じる",
+  "recentSessions.newConversation": "新しい会話に入る",
 };
 
 const translations: Record<Locale, Record<keyof typeof en, string>> = { en, ja };

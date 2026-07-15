@@ -11,6 +11,7 @@ grammar feedback and summaries, as distinct from the Live API path).
 from __future__ import annotations
 
 import json
+import logging
 
 import vertexai
 from pydantic import BaseModel
@@ -19,6 +20,8 @@ from vertexai.generative_models import GenerationConfig, GenerativeModel
 from ..config import get_settings
 
 MODEL_NAME = "gemini-2.5-flash"
+
+logger = logging.getLogger(__name__)
 
 REVIEW_INSTRUCTION = """
 You will be given a transcript of a short English conversation practice
@@ -80,7 +83,10 @@ def generate_review(transcript: list[dict]) -> ReviewResult:
         _ensure_init()
         model = GenerativeModel(MODEL_NAME, system_instruction=REVIEW_INSTRUCTION)
         response = model.generate_content(
-            json.dumps(transcript, ensure_ascii=False),
+            # default=str: the transcript should already be JSON-safe
+            # (_load_transcript projects fields), but a stray datetime must
+            # degrade the prompt, not kill the whole review (BUG-032).
+            json.dumps(transcript, ensure_ascii=False, default=str),
             generation_config=GenerationConfig(
                 response_mime_type="application/json",
                 response_schema=ReviewResult.model_json_schema(),
@@ -88,6 +94,7 @@ def generate_review(transcript: list[dict]) -> ReviewResult:
         )
         return ReviewResult.model_validate_json(response.text)
     except Exception:
+        logger.exception("Review generation failed; returning fallback review")
         return ReviewResult(
             summary="Review generation is temporarily unavailable.",
             score_total=0,

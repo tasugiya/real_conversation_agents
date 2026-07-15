@@ -310,6 +310,13 @@ def _mark_stale_sessions_abandoned(stale_docs: list) -> None:
 
 
 def _load_transcript(session_id: str) -> list[dict]:
+    """Load session messages projected to JSON-safe fields only.
+
+    generate_review() serialises the transcript with json.dumps; Firestore
+    documents carry a created_at DatetimeWithNanoseconds that is not JSON
+    serialisable and made every review with at least one saved message fall
+    back to "temporarily unavailable" (BUG-032).
+    """
     docs = (
         firestore_client.get_client()
         .collection(SESSION_MESSAGES_COLLECTION)
@@ -317,7 +324,14 @@ def _load_transcript(session_id: str) -> list[dict]:
         .order_by("created_at")
         .stream()
     )
-    return [d.to_dict() for d in docs]
+    return [
+        {
+            "role": data.get("role"),
+            "speaker_id": data.get("speaker_id"),
+            "transcript": data.get("transcript"),
+        }
+        for data in (d.to_dict() for d in docs)
+    ]
 
 
 def _compute_session_metrics(
