@@ -15,6 +15,7 @@ from src.services.agent_engine_client import (
     _KNOWN_PERSONAS,
     _extract_speaker_from_text,
     _normalize_event,
+    _split_speaker_segments,
 )
 
 
@@ -78,6 +79,47 @@ class TestExtractSpeakerFromText:
         speaker, text = _extract_speaker_from_text("Alice:")
         assert speaker == "alice"
         assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# _split_speaker_segments (BUG-031: one turn containing several characters)
+# ---------------------------------------------------------------------------
+
+class TestSplitSpeakerSegments:
+    def test_single_labelled_segment(self):
+        assert _split_speaker_segments("Alice: Hello there!") == [("alice", "Hello there!")]
+
+    def test_no_label(self):
+        assert _split_speaker_segments("just plain text") == [(None, "just plain text")]
+
+    def test_empty_text(self):
+        assert _split_speaker_segments("   ") == []
+
+    def test_two_speakers_in_one_turn(self):
+        segments = _split_speaker_segments("Mia: I love that show. Emma: 本当ですね！")
+        assert segments == [("mia", "I love that show."), ("emma", "本当ですね！")]
+
+    def test_second_label_on_new_line(self):
+        segments = _split_speaker_segments("Mia: First thought.\nEmma: Second thought.")
+        assert segments == [("mia", "First thought."), ("emma", "Second thought.")]
+
+    def test_leading_unlabelled_text_kept_with_none_speaker(self):
+        segments = _split_speaker_segments("...continuing. Bob: My turn now.")
+        assert segments == [(None, "...continuing."), ("bob", "My turn now.")]
+
+    def test_unknown_name_not_split(self):
+        assert _split_speaker_segments("Charlie: Who am I?") == [(None, "Charlie: Who am I?")]
+
+    def test_mid_word_colon_not_split(self):
+        # "Here is a list:" — no persona label, no split
+        assert _split_speaker_segments("Here is a list: items") == [(None, "Here is a list: items")]
+
+    def test_label_only_fragment_keeps_speaker(self):
+        # A streaming delta that is exactly the label must keep attribution
+        assert _split_speaker_segments("Alice:") == [("alice", "")]
+
+    def test_case_insensitive(self):
+        assert _split_speaker_segments("EMMA: hi")[0][0] == "emma"
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +197,61 @@ class TestNormalizeEvent:
         assert len(finals) == 1
         assert finals[0].speaker_id == "bob"
         assert finals[0].text == "I disagree with that."
+
+    def test_output_transcription_with_two_speakers_is_split(self):
+        # BUG-031: a turn violating rule 1 must become one event per speaker
+        raw = _make_raw_event()
+        transcription = MagicMock()
+        transcription.text = "Mia: That was fun. Emma: 本当ですね！"
+        transcription.finished = True
+        raw.output_transcription = transcription
+
+        results = _normalize_event(raw)
+        finals = [r for r in results if r.type == "text_final"]
+        assert [(f.speaker_id, f.text) for f in finals] == [
+            ("mia", "That was fun."),
+            ("emma", "本当ですね！"),
+        ]
+
+    def test_text_delta_with_two_speakers_is_split(self):
+        raw = _make_raw_event()
+        raw.content = MagicMock()
+        raw.content.parts = [_make_part(text="Alice: Hi! Bob: Hello!")]
+
+        results = _normalize_event(raw)
+        assert [(r.speaker_id, r.text) for r in results] == [
+            ("alice", "Hi!"),
+            ("bob", "Hello!"),
+        ]
+
+    def test_wrap_up_tool_call_emits_session_wrap(self):
+        # ROOT_INSTRUCTION rule 12: the model calls wrap_up_session after the
+        # goodbye turn; ws.py ends the session gracefully on this event.
+        function_call = MagicMock()
+        function_call.name = "wrap_up_session"
+        part = MagicMock()
+        part.text = None
+        part.inline_data = None
+        part.function_call = function_call
+        raw = _make_raw_event()
+        raw.content = MagicMock()
+        raw.content.parts = [part]
+
+        results = _normalize_event(raw)
+        assert [r.type for r in results] == ["session_wrap"]
+
+    def test_other_tool_calls_are_ignored(self):
+        function_call = MagicMock()
+        function_call.name = "some_other_tool"
+        part = MagicMock()
+        part.text = None
+        part.inline_data = None
+        part.function_call = function_call
+        raw = _make_raw_event()
+        raw.content = MagicMock()
+        raw.content.parts = [part]
+
+        assert _normalize_event(raw) == []
 
     def test_output_transcription_not_final_is_ignored(self):
         raw = _make_raw_event()

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiError, api, usingMockApi } from "./api";
+import { ApiError, api, registerAuthHooks, usingMockApi } from "./api";
 import { LocaleContext, readStoredLocale, translate, useLocale, useT, type Locale } from "./i18n";
 import { PERSONA_POOL, personaFor } from "./personas";
 import { navigate, useRoute, type Route } from "./router";
@@ -44,6 +44,25 @@ function AppShell() {
   const [error, setError] = useState<string | null>(null);
   const [congested, setCongested] = useState(false);
   const [booting, setBooting] = useState(true);
+
+  // Registered once, before the restore effect below runs, so any request
+  // it fires (e.g. getSession while restoring a reload) already benefits
+  // from the same silent-refresh/expiry handling as normal in-app calls.
+  useEffect(() => {
+    registerAuthHooks({
+      onTokenRefreshed: (auth) => {
+        authStorage.set({ token: auth.access_token, expiresAt: auth.expires_at });
+        setToken(auth.access_token);
+      },
+      onSessionExpired: () => {
+        authStorage.clear();
+        activeSessionStorage.clear();
+        setToken(null);
+        navigate("/", { replace: true });
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Runs once, only to rehydrate state after a reload -- normal in-app
   // navigation (login -> setup -> session -> review) already sets this
@@ -233,7 +252,7 @@ function AppShell() {
         <ConversationScreen session={session} token={token} topicPack={topicPack} onFinish={finishSession} onError={setError} onReset={reset} />
       )}
       {route === "/review" && review && session && <ReviewScreen review={review} participants={session.participants} onNewSession={reset} onGoHome={goToRecentSessions} />}
-      {route === "/reviews" && token && <RecentSessionsScreen token={token} />}
+      {route === "/reviews" && token && <RecentSessionsScreen token={token} onNewConversation={reset} />}
 
       {import.meta.env.DEV && (
         <span
@@ -567,10 +586,14 @@ function ConversationScreen({ session, token, topicPack, onFinish, onError, onRe
       case "session.time_warning":
         setTimeWarning(event.remainingSeconds ?? null);
         return;
+      case "session.wrap":
       case "session.time_limit":
-        // The server is about to close the WS on purpose. Wrap up the same
-        // way the manual "end" button does instead of waiting for onclose
-        // to (wrongly) treat this as a dropped connection -- see BUG-020.
+        // The server is about to close the WS on purpose -- either the
+        // conversation reached its natural end (session.wrap: the agent
+        // said goodbye and called its wrap-up tool) or the hard time limit
+        // hit. Wrap up the same way the manual "end" button does instead
+        // of waiting for onclose to (wrongly) treat this as a dropped
+        // connection -- see BUG-020.
         if (!sessionEndedRef.current) {
           sessionEndedRef.current = true;
           void finish();
@@ -899,7 +922,7 @@ function ReviewScreen({ review, participants, onNewSession, onGoHome }: { review
   );
 }
 
-function RecentSessionsScreen({ token }: { token: string }) {
+function RecentSessionsScreen({ token, onNewConversation }: { token: string; onNewConversation: () => void }) {
   const t = useT();
   const [entries, setEntries] = useState<{ id: string; status: SessionStatus | null }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -970,6 +993,11 @@ function RecentSessionsScreen({ token }: { token: string }) {
           </li>
         ))}
       </ul>
+      <div className="mt-7">
+        <button type="button" onClick={onNewConversation} className={primaryButtonClass}>
+          {t("recentSessions.newConversation")}
+        </button>
+      </div>
     </section>
   );
 }

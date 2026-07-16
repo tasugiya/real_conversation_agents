@@ -21,6 +21,11 @@ ServerEventType = Literal[
     "floor.opened",
     "hint.available",
     "session.state",
+    "session.time_warning",
+    "session.time_limit",
+    "session.wrap",
+    "session.ending",
+    "session.resumed",
     "system.warning",
     "system.error",
     "pong",
@@ -34,6 +39,7 @@ ClientEventType = Literal[
     "user.text",
     "user.interrupt",
     "session.end.request",
+    "client.resume",
     "ping",
 ]
 

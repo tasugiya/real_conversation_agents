@@ -25,9 +25,52 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, token: string | null, init?: RequestInit): Promise<T> {
+// The access token is short-lived (auth_token_ttl_seconds, 1h by default --
+// see api/src/config.py) and nothing proactively renews it while the app
+// sits idle between sessions (BUG: "invalid or expired token" surfaced raw
+// on /v1/topics after finishing a conversation and coming back later). These
+// hooks let App.tsx react when `request()` silently mints a fresh token or
+// gives up, without every call site needing its own 401 handling.
+type AuthHooks = {
+  onTokenRefreshed: (auth: AuthResult) => void;
+  onSessionExpired: () => void;
+};
+let authHooks: AuthHooks | null = null;
+export function registerAuthHooks(hooks: AuthHooks): void {
+  authHooks = hooks;
+}
+
+// Shown for the dev fallback path below. Deliberately not run through the
+// i18n `translate()` helper: that lives in App.tsx/i18n.ts, one layer above
+// this module, same as the other backend-derived messages this file already
+// throws untranslated (e.g. `Request failed (${response.status})`).
+const SESSION_EXPIRED_MESSAGE = "Your session expired. Please sign in again.";
+
+async function request<T>(path: string, token: string | null, init?: RequestInit, isRetry = false): Promise<T> {
   const appCheckToken = await getAppCheckToken();
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(appCheckToken ? { "X-Firebase-AppCheck": appCheckToken } : {}), ...(init?.headers ?? {}) } });
+
+  if (response.status === 401 && token !== null && !isRetry && path !== "/v1/auth") {
+    // prod accepts blank credentials here (routes/auth.py drops the password
+    // check when environment == "prod"), so this silently mints a fresh
+    // token and retries once with no visible interruption. dev still
+    // requires the real password, so this rejects the same way and falls
+    // through to the session-expired path below instead.
+    try {
+      const refreshed = await api.login("", "");
+      authHooks?.onTokenRefreshed(refreshed);
+      return await request<T>(path, refreshed.access_token, init, true);
+    } catch {
+      // Thrown here (rather than falling through to the generic handling
+      // below) so the caller's existing `.catch((reason) => setError(reason.message))`
+      // shows this message instead of the raw "invalid or expired token"
+      // backend detail -- onSessionExpired() only handles navigation/storage,
+      // it must not also call setError or it'd race with the caller's own.
+      authHooks?.onSessionExpired();
+      throw new ApiError(SESSION_EXPIRED_MESSAGE, 401);
+    }
+  }
+
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new ApiError(body?.detail || `Request failed (${response.status})`, response.status);
