@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ApiError, api, usingMockApi } from "./api";
+import { ApiError, api, registerAuthHooks, usingMockApi } from "./api";
 import { LocaleContext, readStoredLocale, translate, useLocale, useT, type Locale } from "./i18n";
 import { PERSONA_POOL, personaFor } from "./personas";
 import { navigate, useRoute, type Route } from "./router";
@@ -44,6 +44,25 @@ function AppShell() {
   const [error, setError] = useState<string | null>(null);
   const [congested, setCongested] = useState(false);
   const [booting, setBooting] = useState(true);
+
+  // Registered once, before the restore effect below runs, so any request
+  // it fires (e.g. getSession while restoring a reload) already benefits
+  // from the same silent-refresh/expiry handling as normal in-app calls.
+  useEffect(() => {
+    registerAuthHooks({
+      onTokenRefreshed: (auth) => {
+        authStorage.set({ token: auth.access_token, expiresAt: auth.expires_at });
+        setToken(auth.access_token);
+      },
+      onSessionExpired: () => {
+        authStorage.clear();
+        activeSessionStorage.clear();
+        setToken(null);
+        navigate("/", { replace: true });
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Runs once, only to rehydrate state after a reload -- normal in-app
   // navigation (login -> setup -> session -> review) already sets this
